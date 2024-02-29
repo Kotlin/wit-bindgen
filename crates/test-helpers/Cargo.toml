@@ -1,6 +1,7 @@
 [package]
 name = "test-helpers"
 edition.workspace = true
+version.workspace = true
 publish = false
 
 [lib]
