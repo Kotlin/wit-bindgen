@@ -2,6 +2,7 @@
 name = "codegen-macro"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 edition.workspace = true
+version.workspace = true
 publish = false
 
 [lib]
