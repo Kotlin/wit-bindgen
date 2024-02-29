@@ -46,6 +46,7 @@ wit-bindgen-c = { path = 'crates/c', version = '0.48.1' }
 wit-bindgen-cpp = { path = 'crates/cpp', version = '0.48.1' }
 wit-bindgen-rust = { path = "crates/rust", version = "0.48.1" }
 wit-bindgen-csharp = { path = 'crates/csharp', version = '0.48.1' }
+wit-bindgen-kotlin = { path = 'crates/kotlin', version = '0.25.0' }
 wit-bindgen-markdown = { path = 'crates/markdown', version = '0.48.1' }
 wit-bindgen-moonbit = { path = 'crates/moonbit', version = '0.48.1' }
 wit-bindgen = { path = 'crates/guest-rust', version = '0.48.1', default-features = false }
@@ -64,6 +65,7 @@ wit-bindgen-cpp = { workspace = true, features = ['clap'], optional = true }
 wit-bindgen-markdown = { workspace = true, features = ['clap'], optional = true }
 wit-bindgen-moonbit = { workspace = true, features = ['clap'], optional = true }
 wit-bindgen-csharp = { workspace = true, features = ['clap'], optional = true }
+wit-bindgen-kotlin = { workspace = true, features = ['clap'], optional = true }
 wit-bindgen-test = { workspace = true }
 wit-component = { workspace = true }
 wasm-encoder = { workspace = true }
@@ -77,6 +79,7 @@ default = [
   'go',
   'csharp',
   'cpp',
+  'kotlin',
   'moonbit',
   'async',
 ]
@@ -87,5 +90,6 @@ markdown = ['dep:wit-bindgen-markdown']
 go = []
 csharp = ['dep:wit-bindgen-csharp']
 csharp-mono = ['csharp']
+kotlin = ['dep:wit-bindgen-kotlin']
 moonbit = ['dep:wit-bindgen-moonbit']
 async = []
