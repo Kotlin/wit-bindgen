@@ -1,0 +1,22 @@
+[package]
+name = "wit-bindgen-kotlin"
+version = "0.19.2"
+edition.workspace = true
+repository = 'https://github.com/bytecodealliance/wit-bindgen'
+license = "Apache-2.0 WITH LLVM-exception"
+homepage = 'https://github.com/bytecodealliance/wit-bindgen'
+description = """
+Kotlin bindings generator for WIT and the component model
+"""
+
+[dependencies]
+anyhow = { workspace = true }
+wit-bindgen-core = { workspace = true }
+wit-component = { workspace = true }
+wasm-metadata = { workspace = true }
+heck = { workspace = true }
+clap = { workspace = true, optional = true }
+
+[dev-dependencies]
+test-helpers = { path = '../test-helpers' }
+wit-parser = { workspace = true }
