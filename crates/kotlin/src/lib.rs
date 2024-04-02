@@ -178,15 +178,23 @@ impl WorldGenerator for Kotlin {
             import kotlin.wasm.unsafe.*
             class ComponentException(val value: Any?) : Throwable()
 
-            sealed interface Option<T> {{
-                class Some<T>(val value: T) : Option<T>
-                class None<T> : Option<T>
+            sealed interface Option<out T> {{
+                data class Some<T2>(val value: T2) : Option<T2>
+                data object None : Option<Nothing>
             }}
 
-            fun RET_ALLOCATE(size: Int, align: Int): Int = TODO()
-            fun STRING_TO_MEM(s: String): Int = TODO()
-            fun STRING_FROM_MEM(ptr: Int, len: Int): String = TODO()
+            @WasmExport
+            fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
+                componentModelRealloc(ptr, oldSize, newSize)
+
+            fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
+                writeToLinearMemory(s.encodeToByteArray()).address.toInt()
+
+            fun STRING_FROM_MEM(addr: Int, len: Int): String =
+                loadByteArray(addr.ptr, len).decodeToString()
+
             fun MALLOC(size: Int, align: Int): Int = TODO()
+
             val Int.ptr: Pointer
                 get() = Pointer(this.toUInt())
 
@@ -194,6 +202,24 @@ impl WorldGenerator for Kotlin {
             fun Pointer.loadUShort(): UShort = loadShort().toUShort()
             fun Pointer.loadUInt(): UInt = loadInt().toUInt()
             fun Pointer.loadULong(): ULong = loadLong().toULong()
+
+            internal fun MemoryAllocator.writeToLinearMemory(value: String): Pointer =
+                writeToLinearMemory(value.encodeToByteArray())
+
+            internal fun loadString(addr: Pointer, size: Int): String =
+                loadByteArray(addr, size).decodeToString()
+            internal fun loadByteArray(addr: Pointer, size: Int): ByteArray =
+                ByteArray(size) {{ i -> (addr + i).loadByte() }}
+            internal fun MemoryAllocator.writeToLinearMemory(array: ByteArray): Pointer {{
+                val pointer = allocate(array.size)
+                var currentPointer = pointer
+                array.forEach {{
+                    currentPointer.storeByte(it)
+                    currentPointer += 1
+                }}
+                return pointer
+            }}
+
 
             fun Pointer.loadFloat(): Float = Float.fromBits(loadInt())
             fun Pointer.loadDouble(): Double = Double.fromBits(loadLong())
@@ -274,7 +300,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     fn type_record(&mut self, _id: TypeId, name: &str, record: &Record, docs: &Docs) {
         self.src.push_str("\n");
         self.src.push_str(kdoc(docs).as_str());
-        self.src.push_str("class ");
+        self.src.push_str("data class ");
         let name = name.to_upper_camel_case();
         self.src.push_str(&name);
         // TODO(Kotlin): ident doesn't work
@@ -587,6 +613,7 @@ impl InterfaceGenerator<'_> {
         self.src.push_str("public ");
         self.print_sig(func);
         self.src.push_str(" {\n");
+        self.src.push_str(" withScopedMemoryAllocator { allocator -> \n");
 
         let mut f = FunctionBindgen::new(self, &import_name);
         for (name, _) in &func.params {
@@ -609,6 +636,7 @@ impl InterfaceGenerator<'_> {
         } = f;
 
         self.src.push_str(&String::from(src));
+        self.src.push_str("}\n");
         self.src.push_str("}\n");
     }
 
@@ -650,6 +678,8 @@ impl InterfaceGenerator<'_> {
             _ => unimplemented!("multi-value return not supported"),
         }
         s.push_str(" {\n");
+        s.push_str(" withScopedMemoryAllocator { allocator -> \n");
+
 
         // Perform all lifting/lowering and append it to our src.
         abi::call(
@@ -662,29 +692,7 @@ impl InterfaceGenerator<'_> {
         let FunctionBindgen { src, .. } = f;
         self.private_top_level_src.push_str(&src);
         self.private_top_level_src.push_str("}\n");
-
-        if abi::guest_export_needs_post_return(self.resolve, func) {
-            uwriteln!(
-                self.private_top_level_src,
-                "@WasmExport(\"cabi_post_{export_name}\")"
-            );
-            uwrite!(self.private_top_level_src, "fun {export_fun_name}_post_return(");
-
-            let mut params = Vec::new();
-            for (i, result) in sig.results.iter().enumerate() {
-                let name = format!("p{i}");
-                uwrite!(self.private_top_level_src, "name: {},", wasm_type(*result));
-                params.push(name);
-            }
-            self.private_top_level_src.push_str(") {\n");
-
-            let mut f = FunctionBindgen::new(self, &export_fun_name);
-            f.params = params;
-            abi::post_return(f.gen.resolve, func, &mut f);
-            let FunctionBindgen { src, .. } = f;
-            self.private_top_level_src.push_str(&src);
-            self.private_top_level_src.push_str("}\n");
-        }
+        self.private_top_level_src.push_str("}\n");
     }
 
     fn print_sig(&mut self, func: &Function) {
@@ -707,6 +715,7 @@ impl InterfaceGenerator<'_> {
                     0 => self.src.push_str("Unit"),
                     1 => self.src.push_str(self.type_name(&params[0].1).as_str()),
                     count => {
+                        self.gen.tuple_counts.insert(count);
                         uwrite!(
                             self.src,
                             "Tuple{count}<{}>",
@@ -906,8 +915,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     1 => {
                         results.push(operands[0].clone());
                     }
-                    _ => {
+                    count => {
                         let name = self.gen.type_name(&Type::Id(*ty));
+                        self.gen.gen.tuple_counts.insert(count);
                         let mut result = format!("{name}(\n");
                         for op in operands {
                             uwriteln!(result, "{},", op);
@@ -1149,15 +1159,13 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let some_result = &some_results[0];
                 let result = self.locals.tmp("option");
 
-                let payload_type_str = self.gen.type_name(payload);
-
                 if is_option_type(self.gen.resolve, payload) {
                     uwriteln!(
                         self.src,
                         "val {result} = if ({op0} == 1) {{
                             {some} Option.Some({some_result})
                         }} else {{
-                            {none} Option.None<{payload_type_str}>()
+                            {none} Option.None
                         }}"
                     );
                 } else {
@@ -1282,13 +1290,15 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let op = &operands[0];
                 let ptr = self.locals.tmp("ptr");
                 let len = self.locals.tmp("len");
+                let bytearray = self.locals.tmp("bytearray");
 
                 // TODO(Kotlin): Post-return cleanup
                 uwriteln!(
                     self.src,
                     "
-                    val {len} = {op}.length * 2
-                    val {ptr} = STRING_TO_MEM({op})
+                    val {bytearray} = {op}.encodeToByteArray()
+                    val {len} = {bytearray}.size
+                    val {ptr} = allocator.writeToLinearMemory({bytearray}).address.toInt()
                     "
                 );
 
@@ -1313,7 +1323,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 uwrite!(
                     self.src,
                     "
-                    val {address} = MALLOC({op}.size * {size}, {align})
+                    val {address} = allocator.allocate({op}.size * {size} /*, align={align}*/).address.toInt()
                     for (({index}, el) in {op}.withIndex()) {{
                         val base = {address} + ({index} * {size})
                         {body}
@@ -1431,6 +1441,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     1 => uwriteln!(self.src, "return {}", operands[0]),
                     count => {
                         let results = operands.join(", ");
+                        self.gen.gen.tuple_counts.insert(count);
                         uwriteln!(self.src, "return Tuple{count}({results})")
                     }
                 }
@@ -1487,7 +1498,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
     fn return_pointer(&mut self, size: usize, align: usize) -> String {
         let ptr = self.locals.tmp("ptr");
-        uwriteln!(self.src, "val {ptr} = RET_ALLOCATE(size={size}, align={align})");
+        uwriteln!(self.src, "val {ptr} = /* RETURN_ADDRESS_ALLOC(size={size}, align={align})*/ allocator.allocate({size}).address.toInt()");
         ptr
     }
 
