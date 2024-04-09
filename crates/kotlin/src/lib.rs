@@ -94,7 +94,7 @@ impl WorldGenerator for Kotlin {
         let object_body =  &gen.src.as_mut_string();
         let top_level_body = &gen.private_top_level_src.as_mut_string();
         // TODO(Kotlin): Naming of exports
-        uwriteln!(self.src, "object {namespace_name} {{\n{object_body}\n}}\n{top_level_body}\n");
+        uwriteln!(self.src, "interface {namespace_name} {{\n{object_body}\n}}\n{top_level_body}\n");
         Ok(())
     }
 
@@ -141,7 +141,7 @@ impl WorldGenerator for Kotlin {
             gen.export(func, None);
         }
 
-        uwriteln!(gen.gen.src, "object {interface_name} {{");
+        uwriteln!(gen.gen.src, "interface {interface_name} {{");
         gen.gen.src.push_str(&gen.src);
         uwriteln!(gen.gen.src, "\n}}");
         gen.gen.src.push_str(&gen.private_top_level_src);
@@ -230,7 +230,10 @@ impl WorldGenerator for Kotlin {
             "
         );
 
-        for tup_size in &self.tuple_counts {
+        let mut tuple_counts = Vec::from_iter(&self.tuple_counts);
+        tuple_counts.sort();
+
+        for tup_size in tuple_counts {
             uwrite!(kt_str, "data class Tuple{tup_size}<");
             for i in 0..*tup_size {
                 uwrite!(kt_str, "T{i},");
@@ -467,8 +470,8 @@ impl InterfaceGenerator<'_> {
             Type::S32 => dst.push_str("Int"),
             Type::U64 => dst.push_str("ULong"),
             Type::S64 => dst.push_str("Long"),
-            Type::Float32 => dst.push_str("Float"),
-            Type::Float64 => dst.push_str("Double"),
+            Type::F32 => dst.push_str("Float"),
+            Type::F64 => dst.push_str("Double"),
             Type::String => dst.push_str("String"),
             Type::Id(id) => self.push_type_id_name(id, dst)
         }
@@ -647,7 +650,7 @@ impl InterfaceGenerator<'_> {
         let export_name = func.core_export_name(core_module_name.as_deref());
 
         self.print_sig(func);
-        self.src.push_str(" = TODO(\"Implement export\")\n");
+        self.src.push_str("\n");
 
         uwriteln!(
             self.private_top_level_src,
@@ -678,6 +681,7 @@ impl InterfaceGenerator<'_> {
             _ => unimplemented!("multi-value return not supported"),
         }
         s.push_str(" {\n");
+        s.push_str("freeAllComponentModelReallocAllocatedMemory()\n");
         s.push_str(" withScopedMemoryAllocator { allocator -> \n");
 
 
@@ -844,10 +848,11 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::I64FromU64 => {
                 results.push(format!("{}.toLong()", operands[0]));
             }
-            Instruction::F32FromFloat32
-            | Instruction::F64FromFloat64
-            | Instruction::Float32FromF32
-            | Instruction::Float64FromF64 => {
+
+            Instruction::CoreF32FromF32
+            | Instruction::CoreF64FromF64
+            | Instruction::F32FromCoreF32
+            | Instruction::F64FromCoreF64 => {
                 results.push(operands[0].clone());
             }
 
@@ -1386,6 +1391,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     self.src.push_str(op);
                 }
                 self.src.push_str(")\n");
+                self.src.push_str("freeAllComponentModelReallocAllocatedMemory();\n");
             }
 
             Instruction::CallInterface { func } => {
@@ -1423,7 +1429,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
                 let call_namespace = match &self.gen.namespace_name {
                     None => String::new(),
-                    Some(name) => format!("{name}.")
+                    Some(name) => format!("{name}Impl.")
                 };
                 let name = self.gen.kotlin_fun_name(func);
                 let args = operands.join(", ");
