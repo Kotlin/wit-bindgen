@@ -63,7 +63,9 @@ impl WorldGenerator for Kotlin {
         }
 
         for (_, func) in &resolve.interfaces[id].functions {
-            gen.import(Some(name), func);
+            if func.kind == FunctionKind::Freestanding {
+                gen.import(Some(name), func);
+            }
         }
 
         let object_body =  &gen.src.as_mut_string();
@@ -181,6 +183,13 @@ impl WorldGenerator for Kotlin {
             sealed interface Option<out T> {{
                 data class Some<T2>(val value: T2) : Option<T2>
                 data object None : Option<Nothing>
+            }}
+
+            internal value class ResourceHandle(internal val value: Int)
+
+            // TODO: Use stdlib type
+            public interface AutoCloseable {{
+                fun close(): Unit
             }}
 
             @WasmExport
@@ -320,39 +329,71 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         self.src.push_str(")");
     }
 
-    fn type_resource(&mut self, _id: TypeId, name: &str, docs: &Docs) {
+    fn type_resource(&mut self, typeId: TypeId, name: &str, docs: &Docs) {
         let camel = name.to_upper_camel_case();
 
-        // TODO(Kotlin): Resource drops clash with imports and exports
-        /*
-        // All resources, whether or not they're imported or exported, get the
-        // ability to drop handles.
-        let import_module = if self.in_import {
-            self.wasm_import_module.unwrap().to_string()
-        } else {
-            match self.interface {
-                Some((_, key)) => self.resolve.name_world_key(key),
-                None => unimplemented!("resource exports from worlds"),
-            }
+        let import_module = match self.interface {
+            Some((_, key)) => self.resolve.name_world_key(key),
+            None => unimplemented!("resource imports from worlds"),
         };
 
         self.private_top_level_src.push_str(&format!(
             r#"
-@WasmImport("{import_module}", "[resource-drop]{name}")
-private external fun __wasm_import_{camel}_drop(handle: Int): Unit
-
-fun {camel}.drop() {{
-    __wasm_import_{camel}_drop(this.__handle)
-}}
+                @WasmImport("{import_module}", "[resource-drop]{name}")
+                private external fun __wasm_import_{camel}_drop(handle: Int): Unit
             "#
         ));
-
-         */
 
         // All resources, whether or not they're imported or exported, have an
         // handle-index-based representation handles.
         self.src.push_str(kdoc(docs).as_str());
-        self.src.push_str(&format!("class {camel}(val __handle: Int)\n"));
+
+        self.src.push_str(&format!("class {camel} internal constructor(internal val __handle: ResourceHandle) : AutoCloseable {{\n"));
+        self.src.push_str(&format!("override fun close() {{ __wasm_import_{camel}_drop(__handle.value) }} "));
+
+        let ty = &self.resolve.types[typeId];
+        let mut functions: Vec<&Function> = Vec::new();
+        match ty.owner {
+            TypeOwner::Interface(id) => {
+                let interface = &self.resolve.interfaces[id];
+                for (_, f) in &interface.functions {
+                    functions.push(f);
+                }
+            }
+            TypeOwner::World(id) => {
+                let world = &self.resolve.worlds[id];
+                for (_, import) in world.imports.iter() {
+                    match import {
+                        WorldItem::Function(f) => functions.push(f),
+                        _ => {}
+                    }
+                }
+            }
+            TypeOwner::None => unimplemented!("Resource without type owner")
+        }
+
+        for f in &functions {
+            match f.kind {
+                FunctionKind::Method(id) | FunctionKind::Constructor(id) if id == typeId => {
+                    self.import(self.interface.map(|(_, k)| k  ), f);
+                }
+                _ => {}
+            }
+        }
+
+
+        self.src.push_str("companion object {");
+
+        for f in &functions {
+            match f.kind {
+                FunctionKind::Static(id) if id == typeId => {
+                    self.import(self.interface.map(|(_, k)| k  ), f);
+                }
+                _ => {}
+            }
+        }
+        self.src.push_str("}");
+        self.src.push_str("}");
     }
 
     fn type_flags(&mut self, _id: TypeId, name: &str, flags: &Flags, docs: &Docs) {
@@ -576,7 +617,7 @@ impl InterfaceGenerator<'_> {
     }
 
     fn kotlin_fun_name(&self, func: &Function) -> String {
-        to_kotlin_ident(func.name.as_str()).replace(".", "__")
+        to_kotlin_ident(func.item_name())
     }
 
     fn import(&mut self, interface_name: Option<&WorldKey>, func: &Function) {
@@ -615,13 +656,21 @@ impl InterfaceGenerator<'_> {
         self.src.push_str(kdoc(&func.docs).as_str());
         self.src.push_str("public ");
         self.print_sig(func);
+        if let FunctionKind::Constructor(_) = func.kind {
+            // IIFE in primary construct call
+            self.src.push_str(": this(ResourceHandle(run(fun (): Int");
+        }
         self.src.push_str(" {\n");
         self.src.push_str(" withScopedMemoryAllocator { allocator -> \n");
 
-        let mut f = FunctionBindgen::new(self, &import_name);
-        for (name, _) in &func.params {
-            let param = &to_kotlin_ident(name);
-            f.locals.insert(param).unwrap();
+        let mut f = FunctionBindgen::new(self, &import_name, func.kind.clone());
+        for (idx, (name, _)) in func.params.iter().enumerate() {
+            let param = if idx == 0 && matches!(func.kind, FunctionKind::Method(_)) {
+                "this".to_string()
+            } else {
+                to_kotlin_ident(name)
+            };
+            f.locals.insert(&param).unwrap();
             f.params.push(param.clone());
         }
 
@@ -641,6 +690,10 @@ impl InterfaceGenerator<'_> {
         self.src.push_str(&String::from(src));
         self.src.push_str("}\n");
         self.src.push_str("}\n");
+        if let FunctionKind::Constructor(_) = func.kind {
+            // End of IIFE in primary construct call
+            self.src.push_str(")))\n");
+        }
     }
 
     fn export(&mut self, func: &Function, interface_name: Option<&WorldKey>) {
@@ -659,7 +712,7 @@ impl InterfaceGenerator<'_> {
         let name = self.kotlin_fun_name(func);
         let export_fun_name = self.gen.names.tmp(&format!("__wasm_export_{name}"));
 
-        let mut f = FunctionBindgen::new(self, &export_fun_name);
+        let mut f = FunctionBindgen::new(self, &export_fun_name, func.kind.clone());
         let s: &mut Source = &mut f.gen.private_top_level_src;
         s.push_str("fun ");
         s.push_str(&export_fun_name);
@@ -701,18 +754,30 @@ impl InterfaceGenerator<'_> {
 
     fn print_sig(&mut self, func: &Function) {
         let name = self.kotlin_fun_name(func);
-        self.src.push_str("fun ");
-        self.src.push_str(&name);
+        if let FunctionKind::Constructor(_) = func.kind {
+            self.src.push_str("constructor");
+        } else {
+            self.src.push_str("fun ");
+            self.src.push_str(&name);
+        }
         self.src.push_str("(");
         for (i, (name, ty)) in func.params.iter().enumerate() {
-            if i > 0 {
-                self.src.push_str(", ");
+            if let FunctionKind::Method(_) = func.kind {
+                if i == 0 { continue }
+                if i > 1 { self.src.push_str(", "); }
+            } else {
+                if i > 0 { self.src.push_str(", "); }
             }
             self.src.push_str(&to_kotlin_ident(name));
             self.src.push_str(": ");
             self.src.push_str(self.type_name(ty).as_str());
         }
-        self.src.push_str("): ");
+        self.src.push_str(")");
+        if let FunctionKind::Constructor(_) = func.kind {
+            return;
+        }
+
+        self.src.push_str(": ");
         match &func.results {
             Results::Named(params) => {
                 match params.len() {
@@ -750,6 +815,7 @@ fn kdoc(docs: &Docs) -> String {
 
 struct FunctionBindgen<'a, 'b> {
     gen: &'a mut InterfaceGenerator<'b>,
+    kind: FunctionKind,
     locals: Ns,
     src: Source,
     func_to_call: &'a str,
@@ -763,9 +829,11 @@ impl<'a, 'b> FunctionBindgen<'a, 'b> {
     fn new(
         gen: &'a mut InterfaceGenerator<'b>,
         func_to_call: &'a str,
+        kind: FunctionKind,
     ) -> FunctionBindgen<'a, 'b> {
         FunctionBindgen {
             gen,
+            kind,
             locals: Default::default(),
             src: Default::default(),
             func_to_call,
@@ -960,13 +1028,20 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
             Instruction::HandleLower { .. } => {
                 let op = &operands[0];
-                results.push(format!("{op}.__handle"))
+                results.push(format!("{op}.__handle.value"))
             }
 
             Instruction::HandleLift { ty, .. } => {
                 let op = &operands[0];
-                let name = self.gen.type_name(&Type::Id(*ty));
-                results.push(format!("{name}({op})"))
+                match self.kind {
+                    FunctionKind::Constructor(_) => {
+                        results.push(op.to_string());
+                    }
+                    _ => {
+                        let name = self.gen.type_name(&Type::Id(*ty));
+                        results.push(format!("{name}(ResourceHandle({op}))"))
+                    }
+                }
             },
 
             Instruction::FlagsLower { flags, .. } => {
