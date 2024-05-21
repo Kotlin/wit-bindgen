@@ -170,10 +170,8 @@ impl WorldGenerator for Kotlin {
 
         let version = env!("CARGO_PKG_VERSION");
 
-        let mut kt_str = Source::default();
-        wit_bindgen_core::generated_preamble(&mut kt_str, version);
-
-        uwriteln!(kt_str,
+        let mut support_kt_str = Source::default();
+        uwriteln!(support_kt_str,
             "
             @file:OptIn(UnsafeWasmMemoryApi::class)
 
@@ -229,8 +227,6 @@ impl WorldGenerator for Kotlin {
             fun Pointer.loadDouble(): Double = Double.fromBits(loadLong())
             fun Pointer.storeFloat(value: Float) {{ storeInt(value.toRawBits()) }}
             fun Pointer.storeDouble(value: Double) {{ storeLong(value.toRawBits()) }}
-
-            // -------------------------------------------------------
             "
         );
 
@@ -238,21 +234,32 @@ impl WorldGenerator for Kotlin {
         tuple_counts.sort();
 
         for tup_size in tuple_counts {
-            uwrite!(kt_str, "data class Tuple{tup_size}<");
+            uwrite!(support_kt_str, "data class Tuple{tup_size}<");
             for i in 0..*tup_size {
-                uwrite!(kt_str, "T{i},");
+                uwrite!(support_kt_str, "T{i},");
             }
-            uwrite!(kt_str, ">(");
+            uwrite!(support_kt_str, ">(");
             for i in 0..*tup_size {
-                uwrite!(kt_str, "val f{i}: T{i},");
+                uwrite!(support_kt_str, "val f{i}: T{i},");
             }
-            uwriteln!(kt_str, ")");
+            uwriteln!(support_kt_str, ")");
         }
+        files.push(&format!("ComponentSupport.kt"), support_kt_str.as_bytes());
 
+        let mut kt_str = Source::default();
+        wit_bindgen_core::generated_preamble(&mut kt_str, version);
+
+        uwriteln!(kt_str,
+            "
+            @file:OptIn(UnsafeWasmMemoryApi::class)
+            import kotlin.wasm.unsafe.*
+            "
+        );
         kt_str.push_str(&self.src);
 
         // TODO(Kotlin): Add custom section
         files.push(&format!("{snake}.kt"), kt_str.as_bytes());
+
         Ok(())
     }
 }
