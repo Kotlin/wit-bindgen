@@ -9,6 +9,7 @@ use wit_bindgen_core::{uwrite, uwriteln, wit_parser::*, Direction, Files, Interf
 #[derive(Default)]
 struct Kotlin {
     src: Source,
+    private_src: Source,
     opts: Opts,
     names: Ns,
     world: String,
@@ -69,8 +70,9 @@ impl WorldGenerator for Kotlin {
         }
 
         let object_body =  &gen.src.as_mut_string();
-        let top_level_body = &gen.private_top_level_src.as_mut_string();
-        uwriteln!(self.src, "object {namespace_name} {{\n{object_body}\n}}\n{top_level_body}\n");
+        let private_top_level_body = &gen.private_top_level_src.as_mut_string();
+        uwriteln!(self.src, "object {namespace_name} {{\n{object_body}\n}}\n");
+        uwriteln!(self.private_src, "{private_top_level_body}\n");
     }
 
     fn export_interface(
@@ -94,9 +96,10 @@ impl WorldGenerator for Kotlin {
         }
 
         let object_body =  &gen.src.as_mut_string();
-        let top_level_body = &gen.private_top_level_src.as_mut_string();
+        let private_top_level_body = &gen.private_top_level_src.as_mut_string();
         // TODO(Kotlin): Naming of exports
-        uwriteln!(self.src, "interface {namespace_name} {{\n{object_body}\n}}\n{top_level_body}\n");
+        uwriteln!(self.src, "interface {namespace_name} {{\n{object_body}\n}}\n");
+        uwriteln!(self.private_src, "{private_top_level_body}\n");
         Ok(())
     }
 
@@ -121,7 +124,7 @@ impl WorldGenerator for Kotlin {
         uwriteln!(gen.gen.src, "object {interface_name} {{");
         gen.gen.src.push_str(&gen.src);
         uwriteln!(gen.gen.src, "\n}}");
-        gen.gen.src.push_str(&gen.private_top_level_src);
+        gen.gen.private_src.push_str(&gen.private_top_level_src);
     }
 
     fn export_funcs(
@@ -146,7 +149,7 @@ impl WorldGenerator for Kotlin {
         uwriteln!(gen.gen.src, "interface {interface_name} {{");
         gen.gen.src.push_str(&gen.src);
         uwriteln!(gen.gen.src, "\n}}");
-        gen.gen.src.push_str(&gen.private_top_level_src);
+        gen.gen.private_src.push_str(&gen.private_top_level_src);
         Ok(())
     }
 
@@ -260,6 +263,18 @@ impl WorldGenerator for Kotlin {
         // TODO(Kotlin): Add custom section
         files.push(&format!("{snake}.kt"), kt_str.as_bytes());
 
+        let mut private_kt_str = Source::default();
+        wit_bindgen_core::generated_preamble(&mut private_kt_str, version);
+
+        uwriteln!(private_kt_str,
+            "
+            @file:OptIn(UnsafeWasmMemoryApi::class)
+            import kotlin.wasm.unsafe.*
+            "
+        );
+        private_kt_str.push_str(&self.private_src);
+        files.push(&format!("Internal{snake}.kt"), private_kt_str.as_bytes());
+
         Ok(())
     }
 }
@@ -342,7 +357,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         self.private_top_level_src.push_str(&format!(
             r#"
                 @WasmImport("{import_module}", "[resource-drop]{name}")
-                private external fun __wasm_import_{camel}_drop(handle: Int): Unit
+                internal external fun __wasm_import_{camel}_drop(handle: Int): Unit
             "#
         ));
 
@@ -637,7 +652,7 @@ impl InterfaceGenerator<'_> {
         );
         let name = self.kotlin_fun_name(func);
         let import_name = self.gen.names.tmp(&format!("__wasm_import_{name}",));
-        self.private_top_level_src.push_str("private external fun ");
+        self.private_top_level_src.push_str("internal external fun ");
         self.private_top_level_src.push_str(&import_name);
         self.private_top_level_src.push_str("(");
         for (i, param) in sig.params.iter().enumerate() {
