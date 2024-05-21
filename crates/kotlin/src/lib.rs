@@ -663,6 +663,8 @@ impl InterfaceGenerator<'_> {
             self.src.push_str(": this(ResourceHandle(run(fun (): Int");
         }
         self.src.push_str(" {\n");
+        self.src.push_str("// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Bindings Code\">\n");
+
         self.src.push_str(" withScopedMemoryAllocator { allocator -> \n");
 
         let mut f = FunctionBindgen::new(self, &import_name, func.kind.clone());
@@ -691,6 +693,7 @@ impl InterfaceGenerator<'_> {
 
         self.src.push_str(&String::from(src));
         self.src.push_str("}\n");
+        self.src.push_str("// </editor-fold>\n");
         self.src.push_str("}\n");
         if let FunctionKind::Constructor(_) = func.kind {
             // End of IIFE in primary construct call
