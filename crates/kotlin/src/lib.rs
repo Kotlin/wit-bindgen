@@ -151,6 +151,7 @@ impl WorldGenerator for Kotlin {
     ) -> Result<()> {
         let name = &resolve.worlds[world].name;
         let interface_name = "__WorldExports".to_string();
+        let generate_stubs = self.opts.generate_stubs;
 
         let mut gen = self.interface(resolve, false, Some(interface_name.clone()));
 
@@ -165,6 +166,19 @@ impl WorldGenerator for Kotlin {
         gen.gen.src.push_str(&gen.src);
         uwriteln!(gen.gen.src, "\n}}");
         gen.gen.private_src.push_str(&gen.private_top_level_src);
+
+        if generate_stubs {
+            let mut gen = self.interface(resolve, false, Some(interface_name.clone()));
+            for (_name, func) in funcs.iter() {
+                gen.print_sig(func);
+                gen.src.push_str(" = TODO()\n");
+            }
+
+            // TODO: Generate in a separate file
+            let object_body =  &gen.src.as_mut_string();
+            uwriteln!(self.src, "object {interface_name}Impl {{\n{object_body}\n}}\n");
+        }
+
         Ok(())
     }
 
