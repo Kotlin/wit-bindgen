@@ -30,9 +30,9 @@ test_helpers::codegen_tests!();
 fn verify(dir: &Path, name: &str) {
     let mut cmd = Command::new("kwac");
     let file_name = name.to_upper_camel_case();
-    cmd.arg(format!("{file_name}.kt"));
+    cmd.arg(dir.file_name().unwrap());
     cmd.arg("build");
     cmd.arg(name);
-    cmd.current_dir(dir);
+    cmd.current_dir(dir.parent().unwrap());
     test_helpers::run_command(&mut cmd);
 }
