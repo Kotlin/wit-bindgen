@@ -28,6 +28,9 @@ pub struct ResourceInfo {
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "clap", derive(clap::Args))]
 pub struct Opts {
+    /// Generate subs export implementation
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub generate_stubs: bool,
 }
 
 impl Opts {
@@ -99,6 +102,18 @@ impl WorldGenerator for Kotlin {
         let private_top_level_body = &gen.private_top_level_src.as_mut_string();
         // TODO(Kotlin): Naming of exports
         uwriteln!(self.src, "interface {namespace_name} {{\n{object_body}\n}}\n");
+        if self.opts.generate_stubs {
+            let mut gen = self.interface(resolve, false, Some(namespace_name.to_string()));
+            gen.interface = Some((id, name));
+            for (_name, func) in resolve.interfaces[id].functions.iter() {
+                gen.print_sig(func);
+                gen.src.push_str(" = TODO()\n");
+            }
+
+            // TODO: Generate in a separate file
+            let object_body =  &gen.src.as_mut_string();
+            uwriteln!(self.src, "object {namespace_name}Impl {{\n{object_body}\n}}\n");
+        }
         uwriteln!(self.private_src, "{private_top_level_body}\n");
         Ok(())
     }
