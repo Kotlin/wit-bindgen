@@ -14,7 +14,7 @@ macro_rules! codegen_test {
                 "guest-kotlin",
                 $test.as_ref(),
                 |resolve, world, files| {
-                    wit_bindgen_kotlin::Opts::default()
+                    wit_bindgen_kotlin::Opts { generate_stubs: true }
                         .build()
                         .generate(resolve, world, files)
                         .unwrap()
