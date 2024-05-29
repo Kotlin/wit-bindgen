@@ -107,7 +107,7 @@ impl WorldGenerator for Kotlin {
             gen.interface = Some((id, name));
             for (_name, func) in resolve.interfaces[id].functions.iter() {
                 gen.print_sig(func);
-                gen.src.push_str(" = TODO()\n");
+                gen.src.push_str(" { TODO() }\n");
             }
 
             // TODO: Generate in a separate file
@@ -138,7 +138,7 @@ impl WorldGenerator for Kotlin {
 
         uwriteln!(gen.gen.src, "object {interface_name} {{");
         gen.gen.src.push_str(&gen.src);
-        uwriteln!(gen.gen.src, "\n}}");
+        uwriteln!(gen.gen.src, "\n}}\n");
         gen.gen.private_src.push_str(&gen.private_top_level_src);
     }
 
@@ -164,7 +164,7 @@ impl WorldGenerator for Kotlin {
 
         uwriteln!(gen.gen.src, "interface {interface_name} {{");
         gen.gen.src.push_str(&gen.src);
-        uwriteln!(gen.gen.src, "\n}}");
+        uwriteln!(gen.gen.src, "\n}}\n");
         gen.gen.private_src.push_str(&gen.private_top_level_src);
 
         if generate_stubs {
@@ -372,7 +372,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             self.src.push_str(self.type_name(ty).as_str());
             self.src.push_str(",\n");
         }
-        self.src.push_str(")");
+        self.src.push_str(")\n");
     }
 
     fn type_resource(&mut self, typeId: TypeId, name: &str, docs: &Docs) {
@@ -428,7 +428,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         }
 
 
-        self.src.push_str("companion object {");
+        self.src.push_str("companion object {\n");
 
         for f in &functions {
             match f.kind {
