@@ -28,6 +28,13 @@ macro_rules! codegen_test {
 test_helpers::codegen_tests!();
 
 fn verify(dir: &Path, name: &str) {
+    let mut ktfmt = Command::new("java");
+    ktfmt.arg("-jar");
+    ktfmt.arg("../../../ktfmt-0.47-jar-with-dependencies.jar");
+    ktfmt.arg(dir.file_name().unwrap());
+    ktfmt.current_dir(dir.parent().unwrap());
+    test_helpers::run_command(&mut ktfmt);
+
     let mut cmd = Command::new("kwac");
     let file_name = name.to_upper_camel_case();
     cmd.arg(dir.file_name().unwrap());
