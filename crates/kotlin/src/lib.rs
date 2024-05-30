@@ -375,7 +375,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         self.src.push_str(")\n");
     }
 
-    fn type_resource(&mut self, typeId: TypeId, name: &str, docs: &Docs) {
+    fn type_resource(&mut self, type_id: TypeId, name: &str, docs: &Docs) {
         let camel = name.to_upper_camel_case();
 
         let import_module = match self.interface {
@@ -397,7 +397,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         self.src.push_str(&format!("class {camel} internal constructor(internal val __handle: ResourceHandle) : AutoCloseable {{\n"));
         self.src.push_str(&format!("override fun close() {{ __wasm_import_{camel}_drop(__handle.value) }} "));
 
-        let ty = &self.resolve.types[typeId];
+        let ty = &self.resolve.types[type_id];
         let mut functions: Vec<&Function> = Vec::new();
         match ty.owner {
             TypeOwner::Interface(id) => {
@@ -420,7 +420,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
         for f in &functions {
             match f.kind {
-                FunctionKind::Method(id) | FunctionKind::Constructor(id) if id == typeId => {
+                FunctionKind::Method(id) | FunctionKind::Constructor(id) if id == type_id => {
                     self.import(self.interface.map(|(_, k)| k  ), f);
                 }
                 _ => {}
@@ -432,7 +432,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
         for f in &functions {
             match f.kind {
-                FunctionKind::Static(id) if id == typeId => {
+                FunctionKind::Static(id) if id == type_id => {
                     self.import(self.interface.map(|(_, k)| k  ), f);
                 }
                 _ => {}
