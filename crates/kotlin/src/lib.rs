@@ -1084,33 +1084,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
             Instruction::Bitcasts { casts } => {
                 for (cast, op) in casts.iter().zip(operands) {
-                    match cast {
-                        Bitcast::I32ToF32 => results.push(format!("Float.fromBits({op})")),
-                        Bitcast::I64ToF32 => results.push(format!("Float.fromBits({op}.toInt())")),
-                        Bitcast::I64ToF64 => results.push(format!("Double.fromBits({op})")),
-                        Bitcast::F32ToI32
-                        | Bitcast::F64ToI64 => results.push(format!("{op}.toRawBits()")),
-                        Bitcast::F32ToI64 => results.push(format!("{op}.toRawBits().toLong()")),
-                        Bitcast::I32ToI64 => results.push(format!("{op}.toLong()")),
-                        Bitcast::I64ToI32 => results.push(format!("{op}.toInt()")),
-                        Bitcast::None => results.push(op.to_string()),
-                        Bitcast::I32ToP |
-                        Bitcast::PToI32 |
-                        Bitcast::LToP |
-                        Bitcast::I32ToL |
-                        Bitcast::LToI32 |
-                        Bitcast::PToL => results.push(format!("{op}")),
-
-                        // TODO: Does Kotlin we need P64?
-                        Bitcast::P64ToI64 => unimplemented!("P64ToI64"),
-                        Bitcast::I64ToP64 => unimplemented!("I64ToP64"),
-                        Bitcast::P64ToP => unimplemented!("P64ToP"),
-                        Bitcast::PToP64 => unimplemented!("PToP64"),
-                        Bitcast::I64ToL => unimplemented!("I64ToL"),
-                        Bitcast::LToI64 => unimplemented!("LToI64"),
-
-                        Bitcast::Sequence(_) => unimplemented!("Sequence"),
-                    }
+                    results.push(perform_cast(op, cast));
                 }
             }
 
@@ -1776,6 +1750,38 @@ impl Bindgen for FunctionBindgen<'_, '_> {
         false
     }
 }
+
+fn perform_cast(op: &String, cast: &Bitcast) -> String {
+    match cast {
+        Bitcast::I32ToF32 => format!("Float.fromBits({op})"),
+        Bitcast::I64ToF32 => format!("Float.fromBits({op}.toInt())"),
+        Bitcast::I64ToF64 => format!("Double.fromBits({op})"),
+        Bitcast::F32ToI32
+        | Bitcast::F64ToI64 => format!("{op}.toRawBits()"),
+        Bitcast::F32ToI64 => format!("{op}.toRawBits().toLong()"),
+        Bitcast::I32ToI64 => format!("{op}.toLong()"),
+        Bitcast::I64ToI32 => format!("{op}.toInt()"),
+        Bitcast::None => op.to_string(),
+        Bitcast::I32ToP |
+        Bitcast::PToI32 |
+        Bitcast::LToP |
+        Bitcast::I32ToL |
+        Bitcast::LToI32 |
+        Bitcast::PToL => format!("{op}"),
+
+        Bitcast::I64ToP64 |
+        Bitcast::P64ToI64 => format!("{op}"),
+
+        Bitcast::LToI64 | Bitcast::PToP64 => format!("({op}).toLong()"),
+        Bitcast::I64ToL | Bitcast::P64ToP => format!("({op}).toInt()"),
+
+        Bitcast::Sequence(sequence) => {
+            let [first, second] = &**sequence;
+            perform_cast(&perform_cast(op, first), second)
+        }
+    }
+}
+
 
 fn wasm_type(ty: WasmType) -> &'static str {
     match ty {
