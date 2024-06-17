@@ -1,6 +1,5 @@
 use std::path::Path;
 use std::process::Command;
-use heck::ToUpperCamelCase;
 
 macro_rules! codegen_test {
     // Mutes:
@@ -36,7 +35,6 @@ fn verify(dir: &Path, name: &str) {
     test_helpers::run_command(&mut ktfmt);
 
     let mut cmd = Command::new("kwac");
-    let file_name = name.to_upper_camel_case();
     cmd.arg(dir.file_name().unwrap());
     cmd.arg("build");
     cmd.arg(name);
