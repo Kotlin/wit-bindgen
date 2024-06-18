@@ -741,7 +741,7 @@ impl InterfaceGenerator<'_> {
             | TypeDefKind::Flags(_)
             | TypeDefKind::Enum(_)
             | TypeDefKind::Variant(_) => {
-                let is_exported_resource = !self.in_import && matches!(&ty.kind, TypeDefKind::Resource);
+                let is_exported_resource = self.gen.exported_resources.contains(id);
                 match &ty.owner {
                     TypeOwner::Interface(ty_interface_id) => {
                         let namespace_name = &self.gen.interface_names[ty_interface_id];
