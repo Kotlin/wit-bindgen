@@ -1271,21 +1271,37 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 results.push(format!("{handle}"))
             }
 
-            Instruction::HandleLift { ty, .. } => {
+            Instruction::HandleLift { handle, .. } => {
+                let (Handle::Own(ty) | Handle::Borrow(ty)) = handle;
+                let is_own = matches!(handle, Handle::Own(_));
+                let resource = self.locals.tmp("resource");
+                let id = dealias(self.gen.resolve, *ty);
+                let imported_function_prefix = self.gen.resource_import_prefix(&id);
+                let is_exported = self.gen.gen.exported_resources.contains(&id);
                 let op = &operands[0];
-                match self.kind {
-                    FunctionKind::Constructor(_) => {
-                        results.push(op.to_string());
+                let resource_type_name = self.gen.type_name(&Type::Id(*ty));
+
+                if is_exported {
+                    if is_own {
+                        uwriteln!(self.src,
+                            "val {resource} = RepTable.get({imported_function_prefix}_rep({op})) as {resource_type_name}
+                                 {resource}.__handle = ResourceHandle({op})
+                            "
+                        );
+                    } else {
+                        uwriteln!(self.src, "val {resource} = RepTable.get({op}) as {resource_type_name}");
                     }
-                    _ => {
-                        let name = self.gen.type_name(&Type::Id(*ty));
-                        if self.gen.in_import {
-                            results.push(format!("{name}(ResourceHandle({op}))"))
-                        } else {
-                            results.push(format!("(TODO(\"Lift {op}\") as {name})"))
-                        }
+                } else {
+                    if let FunctionKind::Constructor(_) = self.kind {
+                        // Imported CM constructor return raw handle, it
+                        // is then wrapped inside generated class constructor
+                        uwriteln!(self.src, "val {resource} = {op}");
+                    } else {
+                        uwriteln!(self.src, "val {resource} = {resource_type_name}(ResourceHandle({op}))")
+                        // TODO: Drop this resource at the end of the function
                     }
                 }
+                results.push(resource);
             },
 
             Instruction::FlagsLower { flags, .. } => {
