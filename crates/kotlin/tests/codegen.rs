@@ -11,11 +11,6 @@ macro_rules! codegen_test {
     (resource_borrow_in_record $name:tt $test:tt) => {};
     (return_resource_from_export $name:tt $test:tt) => {};
 
-    // Resource import/export direction issue
-    (issue929_no_export $name:tt $test:tt) => {};
-    (resource_alias $name:tt $test:tt) => {};
-    (resources $name:tt $test:tt) => {};
-
     ($id:ident $name:tt $test:tt) => {
         #[test]
         fn $id() {
