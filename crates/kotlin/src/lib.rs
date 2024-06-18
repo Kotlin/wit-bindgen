@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::mem;
 use wit_bindgen_core::abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType};
-use wit_bindgen_core::{uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns, WorldGenerator, Source};
+use wit_bindgen_core::{uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns, WorldGenerator, Source, dealias};
 
 #[derive(Default)]
 struct Kotlin {
@@ -19,6 +19,7 @@ struct Kotlin {
     world_id: Option<WorldId>,
     tuple_counts: HashSet<usize>,
     interface_names: HashMap<InterfaceId, String>,
+    exported_resources: HashSet<TypeId>,
 }
 
 #[derive(Default)]
@@ -436,6 +437,11 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     }
 
     fn type_resource(&mut self, type_id: TypeId, name: &str, docs: &Docs) {
+
+        if !self.in_import {
+            self.gen.exported_resources.insert(type_id);
+        }
+
         let camel = name.to_upper_camel_case();
 
         let import_module : String = match self.interface {
@@ -449,18 +455,26 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             format!("[export]{import_module}")
         };
 
-        let imported_drop_function_name = if self.in_import {
-            format!("__wasm_import_{camel}_drop")
-        } else {
-            format!("__wasm_export_{camel}_drop")
-        };
+        let imported_function_prefix = self.resource_import_prefix(&type_id);
 
         self.private_top_level_src.push_str(&format!(
             r#"
                 @WasmImport("{import_module}", "[resource-drop]{name}")
-                internal external fun {imported_drop_function_name}(handle: Int): Unit
+                internal external fun {imported_function_prefix}_drop(handle: Int): Unit
             "#
         ));
+
+        if !self.in_import {
+            self.private_top_level_src.push_str(&format!(
+                r#"
+                    @WasmImport("{import_module}", "[resource-new]{name}")
+                    internal external fun {imported_function_prefix}_new(handle: Int): Int
+
+                    @WasmImport("{import_module}", "[resource-rep]{name}")
+                    internal external fun {imported_function_prefix}_rep(handle: Int): Int
+                "#
+            ));
+        }
 
         self.src.push_str(kdoc(docs).as_str());
         if !self.in_import {
@@ -475,7 +489,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         }
 
         // TODO: Zero out the handle
-        uwriteln!(self.src, "override fun close() {{ {imported_drop_function_name}(__handle.value) }} ");
+        uwriteln!(self.src, "override fun close() {{ {imported_function_prefix}_drop(__handle.value) }} ");
 
         let ty = &self.resolve.types[type_id];
         let mut functions: Vec<&Function> = Vec::new();
@@ -651,6 +665,42 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 }
 
 impl InterfaceGenerator<'_> {
+    fn resource_import_prefix(&self, id: &TypeId) -> String {
+        let mut result = String::new();
+        let is_exported = self.gen.exported_resources.contains(&id);
+        let ty = &self.resolve.types[*id];
+
+        match &ty.owner {
+            TypeOwner::Interface(ty_interface_id) => {
+                let namespace_name = &self.gen.interface_names[ty_interface_id];
+                if is_exported {
+                    uwrite!(result, "{namespace_name}Impl");
+                } else {
+                    uwrite!(result, "{namespace_name}");
+                }
+            }
+            TypeOwner::World(_) => {
+                // TODO(KT): World fqn
+            }
+            TypeOwner::None => {}
+        }
+
+        match &ty.name {
+            None => {}
+            Some(name) => {
+                let name = name.to_upper_camel_case();
+                uwrite!(result, "_{name}");
+            }
+        }
+
+        let common_prefix = "__cm_resource_abi";
+        return if is_exported {
+            format!("{common_prefix}_export_{result}")
+        } else {
+            format!("{common_prefix}_import_{result}")
+        };
+    }
+
     fn type_name(&self, ty: &Type) -> String {
         let mut name = String::new();
         self.push_type_name(ty, &mut name);
@@ -1189,9 +1239,36 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 }
             }
 
-            Instruction::HandleLower { .. } => {
+            Instruction::HandleLower {
+                handle,
+                ..
+            } => {
+                let (Handle::Own(ty) | Handle::Borrow(ty)) = handle;
+                let is_own = matches!(handle, Handle::Own(_));
+                let handle = self.locals.tmp("handle");
+                let id = dealias(self.gen.resolve, *ty);
+                let imported_function_prefix = self.gen.resource_import_prefix(&id);
+                let is_exported = self.gen.gen.exported_resources.contains(&id);
                 let op = &operands[0];
-                results.push(format!("{op}.__handle.value"))
+                uwriteln!(self.src, "var {handle} = {op}.__handle.value;");
+
+                if is_exported {
+                    let local_rep = self.locals.tmp("localRep");
+                    uwriteln!(
+                        self.src,
+                        "if ({handle} == 0) {{
+                             var {local_rep} = RepTable.add({op});
+                             {handle} = {imported_function_prefix}_new({local_rep});
+                         }}
+                         "
+                    );
+                }
+
+                if is_own {
+                    uwriteln!(self.src, "{op}.__handle = ResourceHandle(0);");
+                }
+
+                results.push(format!("{handle}"))
             }
 
             Instruction::HandleLift { ty, .. } => {
