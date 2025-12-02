@@ -1,10 +1,11 @@
+use std::any::Any;
 use anyhow::Result;
 use heck::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::mem;
 use wit_bindgen_core::abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType};
-use wit_bindgen_core::{uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns, WorldGenerator, Source, dealias};
+use wit_bindgen_core::{dealias, uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns, Source, WorldGenerator};
 
 #[derive(Default)]
 struct Kotlin {
@@ -51,13 +52,7 @@ impl WorldGenerator for Kotlin {
         self.world_id = Some(world);
     }
 
-    fn import_interface(
-        &mut self,
-        resolve: &Resolve,
-        name: &WorldKey,
-        id: InterfaceId,
-        _files: &mut Files,
-    ) {
+    fn import_interface(&mut self, resolve: &Resolve, name: &WorldKey, id: InterfaceId, _files: &mut Files) -> Result<()> {
         let namespace_name = interface_namespace_name(&resolve, &id, true);
         self.interface_names.insert(id, namespace_name.clone());
 
@@ -78,6 +73,7 @@ impl WorldGenerator for Kotlin {
         let private_top_level_body = &gen.private_top_level_src.as_mut_string();
         uwriteln!(self.src, "object {namespace_name} {{\n{object_body}\n}}\n");
         uwriteln!(self.private_src, "{private_top_level_body}\n");
+        Ok(())
     }
 
     fn export_interface(
@@ -233,10 +229,6 @@ impl WorldGenerator for Kotlin {
             }}
 
             internal value class ResourceHandle(internal val value: Int)
-
-            @WasmExport
-            fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
-                componentModelRealloc(ptr, oldSize, newSize)
 
             fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
                 writeToLinearMemory(s.encodeToByteArray()).address.toInt()
@@ -662,6 +654,8 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     fn type_result(&mut self, _id: TypeId, _name: &str, _result: &Result_, _docs: &Docs) {}
     fn type_list(&mut self, _id: TypeId, _name: &str, _ty: &Type, _docs: &Docs) {}
     fn type_builtin(&mut self, _id: TypeId, _name: &str, _ty: &Type, _docs: &Docs) {}
+    fn type_future(&mut self, id: TypeId, name: &str, ty: &Option<Type>, docs: &Docs) {}
+    fn type_stream(&mut self, id: TypeId, name: &str, ty: &Option<Type>, docs: &Docs) {}
 }
 
 impl InterfaceGenerator<'_> {
@@ -728,7 +722,8 @@ impl InterfaceGenerator<'_> {
             Type::F32 => dst.push_str("Float"),
             Type::F64 => dst.push_str("Double"),
             Type::String => dst.push_str("String"),
-            Type::Id(id) => self.push_type_id_name(id, dst)
+            Type::ErrorContext => dst.push_str("Nothing"),
+            Type::Id(id) => self.push_type_id_name(id, dst),
         }
     }
 
@@ -826,6 +821,11 @@ impl InterfaceGenerator<'_> {
                 self.push_type_name(ty, dst);
                 dst.push_str(">");
             }
+            TypeDefKind::FixedSizeList(ty, _) => {
+                dst.push_str("List<");
+                self.push_type_name(ty, dst);
+                dst.push_str(">");
+            },
             TypeDefKind::Future(_) => unimplemented!(),
             TypeDefKind::Stream(_) => unimplemented!(),
             TypeDefKind::Handle(Handle::Own(resource)) => {
@@ -909,6 +909,7 @@ impl InterfaceGenerator<'_> {
             LiftLower::LowerArgsLiftResults,
             func,
             &mut f,
+            func.kind.is_async(),
         );
 
         let FunctionBindgen {
@@ -930,7 +931,7 @@ impl InterfaceGenerator<'_> {
         let wasm_sig = self.resolve.wasm_signature(AbiVariant::GuestExport, func);
 
         let core_module_name = interface_name.map(|s| self.resolve.name_world_key(s));
-        let export_name = func.core_export_name(core_module_name.as_deref());
+        let export_name = func.core_export_name(core_module_name.as_deref(), Mangling::Standard32);
         {
             let kotlin_sig = self.kotlin_signature(func);
             if !matches!(func.kind, FunctionKind::Constructor(_)) {  // Constructor in exported abstract resource class is not needed
@@ -970,7 +971,6 @@ impl InterfaceGenerator<'_> {
             _ => unimplemented!("multi-value return not supported"),
         }
         s.push_str(" {\n");
-        s.push_str("freeAllComponentModelReallocAllocatedMemory()\n");
         s.push_str(" withScopedMemoryAllocator { allocator -> \n");
 
 
@@ -981,6 +981,7 @@ impl InterfaceGenerator<'_> {
             LiftLower::LiftArgsLowerResults,
             func,
             &mut f,
+            func.kind.is_async(),
         );
         let FunctionBindgen { src, .. } = f;
         self.private_top_level_src.push_str(&src);
@@ -1016,28 +1017,9 @@ impl InterfaceGenerator<'_> {
         }
 
         result.push_str(": ");
-        match &func.results {
-            Results::Named(params) => {
-                match params.len() {
-                    0 => result.push_str("Unit"),
-                    1 => result.push_str(self.type_name(&params[0].1).as_str()),
-                    count => {
-                        self.gen.tuple_counts.insert(count);
-                        uwrite!(
-                            result,
-                            "Tuple{count}<{}>",
-                            func.results
-                                .iter_types()
-                                .map(|ty| self.type_name(ty))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        );
-                    }
-                }
-            }
-            Results::Anon(ty) => {
-                result.push_str(self.type_name(ty).as_str());
-            }
+        match &func.result {
+            None => result.push_str("Unit"),
+            Some(param) => result.push_str(self.type_name(&param).as_str()),
         }
         result
     }
@@ -1083,25 +1065,31 @@ impl<'a, 'b> FunctionBindgen<'a, 'b> {
         }
     }
 
-    fn load(&mut self, ty: &str, offset: i32, operands: &[String], results: &mut Vec<String>) {
-        results.push(format!("({} + {offset}).ptr.load{ty}()", operands[0]));
+    fn load(
+        &mut self,
+        ty: &str,
+        offset: ArchitectureSize,
+        operands: &[String],
+        results: &mut Vec<String>,
+    ) {
+        results.push(format!("({} + {}).ptr.load{ty}()", operands[0], offset.bytes));
     }
 
-    fn load_ext(&mut self, ty: &str, offset: i32, operands: &[String], results: &mut Vec<String>) {
+    fn load_ext(&mut self, ty: &str, offset: ArchitectureSize, operands: &[String], results: &mut Vec<String>) {
         self.load(ty, offset, operands, results);
         let result = results.pop().unwrap();
         results.push(format!("{}.toInt()", result));
     }
 
-    fn store_impl(&mut self, ty: &str, offset: i32, address: &String, value: &String) {
-        uwriteln!(self.src, "({address} + {offset}).ptr.store{ty}({value})");
+    fn store_impl(&mut self, ty: &str, offset: ArchitectureSize, address: &String, value: &String) {
+        uwriteln!(self.src, "({address} + {}).ptr.store{ty}({value})", offset.bytes);
     }
 
-    fn store(&mut self, ty: &str, offset: i32, operands: &[String]) {
+    fn store(&mut self, ty: &str, offset: ArchitectureSize, operands: &[String]) {
         self.store_impl(ty, offset, &operands[1], &operands[0])
     }
 
-    fn store_converted(&mut self, ty: &str, offset: i32, operands: &[String]) {
+    fn store_converted(&mut self, ty: &str, offset: ArchitectureSize, operands: &[String]) {
         let converted_value = format!("{}.to{ty}()", operands[0]);
         self.store_impl(ty, offset, &operands[1], &converted_value)
     }
@@ -1588,20 +1576,18 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let op0 = &operands[0];
                 let result_tmp = self.locals.tmp("result");
 
-
-                let kt_result_type: String = self.gen.type_name(&Type::Id(*ty)).clone();
                 let ok_result = if result.ok.is_some() {
                     let ok_result = &ok_results[0];
-                    format!("{kt_result_type}.success({ok_result})")
+                    format!("Result.success({ok_result})")
                 } else {
-                    format!("{kt_result_type}.success(Unit)")
+                    "Result.success(Unit)".to_string()
                 };
 
                 let err_result = if let Some(_) = result.err.as_ref() {
                     let err_result = &err_results[0];
-                    format!("{kt_result_type}.failure(ComponentException({err_result}))")
+                    format!("Result.failure(ComponentException({err_result}))")
                 } else {
-                    format!("{kt_result_type}.failure(ComponentException(Unit))")
+                    "Result.failure(ComponentException(Unit))".to_string()
                 };
 
                 uwriteln!(
@@ -1663,12 +1649,15 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 uwrite!(
                     self.src,
                     "
-                    val {address} = allocator.allocate({op}.size * {size} /*, align={align}*/).address.toInt()
+                    val {address} = allocator.allocate({op}.size * {} /*, align={}*/).address.toInt()
                     for (({index}, el) in {op}.withIndex()) {{
-                        val base = {address} + ({index} * {size})
+                        val base = {address} + ({index} * {})
                         {body}
                     }}
-                    "
+                    ",
+                    size.bytes,
+                    fmt(&align),
+                    size.bytes,
                 );
 
                 results.push(address);
@@ -1692,11 +1681,12 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     "
                     val {list} = ArrayList<{ty}>({length})
                     for ({index} in 0 until {length}) {{
-                        val base = ({address}) + ({index} * {size})
+                        val base = ({address}) + ({index} * {})
                         {body}
                         {list}.add({result})
                     }}
-                    "
+                    ",
+                    size.bytes
                 );
 
                 results.push(list);
@@ -1726,39 +1716,17 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     self.src.push_str(op);
                 }
                 self.src.push_str(")\n");
-                self.src.push_str("freeAllComponentModelReallocAllocatedMemory();\n");
             }
 
-            Instruction::CallInterface { func } => {
-                let (assignment, destructure) = match func.results.len() {
-                    0 => (String::new(), String::new()),
-                    1 => {
-                        let ty = self.gen.type_name(func.results.iter_types().next().unwrap());
+            Instruction::CallInterface { func, async_ } => {
+                let (assignment, destructure) = match func.result {
+                    None => (String::new(), String::new()),
+                    Some(value) => {
+                        let ty = self.gen.type_name(&value);
                         let result = self.locals.tmp("result");
                         let assignment = format!("val {result}: {ty} = ");
                         results.push(result);
                         (assignment, String::new())
-                    }
-                    count => {
-                        self.gen.gen.tuple_counts.insert(count);
-                        let result = self.locals.tmp("result");
-                        let assignment = format!("val {result} = ");
-
-                        let destructure = func
-                            .results
-                            .iter_types()
-                            .enumerate()
-                            .map(|(index, ty)| {
-                                let ty = self.gen.type_name(ty);
-                                let my_result = self.locals.tmp("result");
-                                let assignment = format!("val {my_result}: {ty} = {result}.f{index}");
-                                results.push(my_result);
-                                assignment
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-
-                        (assignment, destructure)
                     }
                 };
 
@@ -1774,12 +1742,26 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         let args = operands.join(", ");
                         uwriteln!(self.src, "{call_namespace}{name}({args})");
                     }
+                    FunctionKind::AsyncFreestanding => {
+                        let args = operands.join(", ");
+                        uwriteln!(self.src, "{call_namespace}{name}({args})");
+                    }
                     FunctionKind::Method(_) => {
                         let receiver_arg = operands[0].clone();
                         let regular_args = operands[1..].to_vec().join(", ");
                         uwriteln!(self.src, "{receiver_arg}.{name}({regular_args})");
                     }
+                    FunctionKind::AsyncMethod(_) => {
+                        let receiver_arg = operands[0].clone();
+                        let regular_args = operands[1..].to_vec().join(", ");
+                        uwriteln!(self.src, "{receiver_arg}.{name}({regular_args})");
+                    }
                     FunctionKind::Static(resource_type) => {
+                        let args = operands.join(", ");
+                        let resource_class_name = self.gen.type_id_name(&resource_type);
+                        uwriteln!(self.src, "{resource_class_name}.{name}({args})");
+                    }
+                    FunctionKind::AsyncStatic(resource_type) => {
                         let args = operands.join(", ");
                         let resource_class_name = self.gen.type_id_name(&resource_type);
                         uwriteln!(self.src, "{resource_class_name}.{name}({args})");
@@ -1849,13 +1831,43 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 uwrite!(self.src, "{body}");
             }
 
+            Instruction::FutureLower { .. } => {
+                uwriteln!(self.src, "TODO(\"FutureLower\")");
+            }
+            Instruction::FutureLift { .. } => {
+                uwriteln!(self.src, "TODO(\"FutureLift\")");
+            }
+            Instruction::StreamLower { .. } => {
+                uwriteln!(self.src, "TODO(\"StreamLower\")");
+            }
+            Instruction::StreamLift { .. } => {
+                uwriteln!(self.src, "TODO(\"StreamLift\")");
+            }
+            Instruction::ErrorContextLower => {
+                uwriteln!(self.src, "TODO(\"ErrorContextLower\")");
+            }
+            Instruction::ErrorContextLift => {
+                uwriteln!(self.src, "TODO(\"ErrorContextLift\")");
+            }
+            Instruction::Malloc { .. } => {
+                uwriteln!(self.src, "TODO(\"Malloc\")");
+            }
+            Instruction::DropHandle { .. } => {
+                uwriteln!(self.src, "TODO(\"DropHandle\")");
+            }
+            Instruction::AsyncTaskReturn { .. } => {
+                uwriteln!(self.src, "TODO(\"AsyncTaskReturn\")");
+            }
+            Instruction::Flush { amt } => {
+                results.extend(operands.iter().take(*amt).cloned());
+            }
             i => unimplemented!("{:?}", i),
         }
     }
 
-    fn return_pointer(&mut self, size: usize, align: usize) -> String {
+    fn return_pointer(&mut self, size: ArchitectureSize, align: Alignment) -> Self::Operand {
         let ptr = self.locals.tmp("ptr");
-        uwriteln!(self.src, "val {ptr} = /* RETURN_ADDRESS_ALLOC(size={size}, align={align})*/ allocator.allocate({size}).address.toInt()");
+        uwriteln!(self.src, "val {ptr} = /* RETURN_ADDRESS_ALLOC(size={}, align={})*/ allocator.allocate({}).address.toInt()", size.bytes, fmt(&align), size.bytes);
         ptr
     }
 
@@ -1949,5 +1961,12 @@ pub fn to_kotlin_ident(name: &str) -> String {
         "ret" => "ret_".into(),
         "err" => "err_".into(),
         s => s.to_lower_camel_case(),
+    }
+}
+
+fn fmt(alignment: &Alignment) -> &'static str {
+    match alignment {
+        Alignment::Pointer => "Pointer",
+        Alignment::Bytes(_) => "Bytes",
     }
 }
