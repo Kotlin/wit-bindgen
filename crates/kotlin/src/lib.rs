@@ -219,6 +219,7 @@ impl WorldGenerator for Kotlin {
         uwriteln!(support_kt_str,
             "
             @file:OptIn(UnsafeWasmMemoryApi::class)
+            package com.publicobject.wasm
 
             import kotlin.wasm.unsafe.*
             class ComponentException(val value: Any?) : Throwable()
@@ -328,6 +329,8 @@ impl WorldGenerator for Kotlin {
         uwriteln!(kt_str,
             "
             @file:OptIn(UnsafeWasmMemoryApi::class)
+            package com.publicobject.wasm
+
             import kotlin.wasm.unsafe.*
             "
         );
@@ -342,6 +345,8 @@ impl WorldGenerator for Kotlin {
         uwriteln!(private_kt_str,
             "
             @file:OptIn(UnsafeWasmMemoryApi::class)
+            package com.publicobject.wasm
+
             import kotlin.wasm.unsafe.*
             "
         );
