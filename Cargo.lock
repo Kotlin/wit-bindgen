@@ -1497,6 +1497,7 @@ dependencies = [
  "wit-bindgen-cpp",
  "wit-bindgen-csharp",
  "wit-bindgen-go",
+ "wit-bindgen-kotlin",
  "wit-bindgen-markdown",
  "wit-bindgen-moonbit",
  "wit-bindgen-rust",
@@ -1546,6 +1547,19 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-go"
+version = "0.53.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "heck",
+ "wasm-encoder 0.245.0",
+ "wasm-metadata 0.245.0",
+ "wit-bindgen-core",
+ "wit-component",
+]
+
+[[package]]
+name = "wit-bindgen-kotlin"
 version = "0.53.0"
 dependencies = [
  "anyhow",
