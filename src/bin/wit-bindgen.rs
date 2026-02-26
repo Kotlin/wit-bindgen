@@ -74,6 +74,14 @@ enum Opt {
         args: Common,
     },
 
+    #[cfg(feature = "kotlin")]
+    Kotlin {
+        #[clap(flatten)]
+        opts: wit_bindgen_kotlin::Opts,
+        #[clap(flatten)]
+        args: Common,
+    },
+
     // doc-comments are present on `wit_bindgen_test::Opts` for clap to use.
     Test {
         #[clap(flatten)]
@@ -150,6 +158,8 @@ fn main() -> Result<()> {
         Opt::Go { opts, args } => (opts.build(), args),
         #[cfg(feature = "csharp")]
         Opt::Csharp { opts, args } => (opts.build(), args),
+        #[cfg(feature = "kotlin")]
+        Opt::Kotlin { opts, args } => (opts.build(), args),
         Opt::Test { opts } => return opts.run(std::env::args_os().nth(0).unwrap().as_ref()),
     };
 

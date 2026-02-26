@@ -1565,6 +1565,7 @@ dependencies = [
  "anyhow",
  "clap",
  "heck",
+ "id-arena",
  "wasm-encoder 0.245.0",
  "wasm-metadata 0.245.0",
  "wit-bindgen-core",
