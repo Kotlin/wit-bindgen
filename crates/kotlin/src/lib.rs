@@ -228,7 +228,7 @@ impl WorldGenerator for Kotlin {
 
         let version = env!("CARGO_PKG_VERSION");
 
-        let mut writeComponentSupportKt = ||{
+        let mut write_component_support_kt = ||{
             let mut support_kt_str = Source::default();
             uwriteln!(support_kt_str,
             "
@@ -340,7 +340,7 @@ impl WorldGenerator for Kotlin {
             }
             files.push(&format!("ComponentSupport.kt"), support_kt_str.as_bytes());
         };
-        writeComponentSupportKt();
+        write_component_support_kt();
 
 
         let mut kt_str = Source::default();
@@ -412,10 +412,12 @@ impl Kotlin {
         let namespace_name = referenced_interface.kotlin_name;
 
         let mut gen = self.interface(resolve, outside_kind, Some(namespace_name.clone()));
-        let world_key = WorldKey::Name(namespace_name.clone());
+        let world_key = WorldKey::Interface(referenced_interface.id);
         gen.interface = Some((referenced_interface.id, &world_key));
 
-        gen.src.push_str(format!("@WitImport\ncompanion object Import : {namespace_name}{{\n").as_str());
+        if outside_kind.is_imported() {
+            gen.src.push_str(format!("@WitImport\ncompanion object Import : {namespace_name}{{ //<editor-fold defaultstate=\"collapsed\" desc=\"Generated Import Code\">\n").as_str());
+        }
 
 
         for (_name, func) in resolve.interfaces[referenced_interface.id].functions.iter() {
@@ -431,7 +433,10 @@ impl Kotlin {
             }
         }
 
-        gen.src.push_str("}\n// START OF TYPES\n\n");
+        if outside_kind.is_imported()  {
+            gen.src.push_str("}\n// </editor-fold>\n");
+        }
+        gen.src.push_str("// START OF TYPES\n\n");
 
         for (name, ty) in &resolve.interfaces[referenced_interface.id].types {
             gen.define_type(name, *ty);
@@ -456,7 +461,7 @@ impl Kotlin {
         let wit_iface_name = referenced_interface.fq_wit_name;
 
         // TODO(Kotlin): Naming of exports
-        uwriteln!(self.src, "/*@WitInterface(\"{wit_iface_name}\")*/\n/*external */interface {namespace_name} {{\n{object_body}\n}}\n");
+        uwriteln!(self.src, "@WitInterface(\"{wit_iface_name}\")\n/*external */interface {namespace_name} {{\n{object_body}\n}}\n");
         if outside_kind.is_exported(){
             uwriteln!(self.export_stubs_src, "object {namespace_name}Impl : {namespace_name} {{\n{exports_stubs_body}\n}}\n");
         }
@@ -985,7 +990,7 @@ impl InterfaceGenerator<'_> {
             self.src.push_str(": this(ResourceHandle(run(fun (): Int");
         }
         self.src.push_str(" {\n");
-        self.src.push_str("// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Bindings Code\">\n");
+        self.src.push_str("// <editor-fold defaultstate=\"collapsed\" desc=\"Generated ABI Adaption Code\">\n");
 
         self.src.push_str(" withScopedMemoryAllocator { allocator -> \n");
 
