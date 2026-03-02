@@ -1693,18 +1693,20 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
 
                 let kt_result_type: String = self.gen.type_name(&Type::Id(*ty)).clone();
+                debug_assert!(kt_result_type.starts_with("Result"));
+                let type_arguments = kt_result_type.strip_prefix("Result").unwrap();
                 let ok_result = if result.ok.is_some() {
                     let ok_result = &ok_results[0];
-                    format!("{kt_result_type}.success({ok_result})")
+                    format!("Result.success{type_arguments}({ok_result})")
                 } else {
-                    format!("{kt_result_type}.success(Unit)")
+                    format!("Result.success{type_arguments}(Unit)")
                 };
 
                 let err_result = if let Some(_) = result.err.as_ref() {
                     let err_result = &err_results[0];
-                    format!("{kt_result_type}.failure(ComponentException({err_result}))")
+                    format!("Result.failure{type_arguments}(ComponentException({err_result}))")
                 } else {
-                    format!("{kt_result_type}.failure(ComponentException(Unit))")
+                    format!("Result.failure{type_arguments}(ComponentException(Unit))")
                 };
 
                 uwriteln!(
