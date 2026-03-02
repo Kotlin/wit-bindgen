@@ -57,27 +57,29 @@ impl WorldGenerator for Kotlin {
         name: &WorldKey,
         id: InterfaceId,
         _files: &mut Files,
-    ) {
+    ) -> Result<()> {
         let namespace_name = interface_namespace_name(&resolve, &id, true);
         self.interface_names.insert(id, namespace_name.clone());
 
-        let mut gen = self.interface(resolve, true, Some(namespace_name.to_string()));
-        gen.interface = Some((id, name));
+        let mut r#gen = self.interface(resolve, true, Some(namespace_name.to_string()));
+        r#gen.interface = Some((id, name));
 
         for (name, ty) in &resolve.interfaces[id].types {
-            gen.define_type(name, *ty);
+            r#gen.define_type(name, *ty);
         }
 
         for (_, func) in &resolve.interfaces[id].functions {
             if func.kind == FunctionKind::Freestanding {
-                gen.import(func, Some(name));
+                r#gen.import(func, Some(name));
             }
         }
 
-        let object_body =  &gen.src.as_mut_string();
-        let private_top_level_body = &gen.private_top_level_src.as_mut_string();
+        let object_body =  &r#gen.src.as_mut_string();
+        let private_top_level_body = &r#gen.private_top_level_src.as_mut_string();
         uwriteln!(self.src, "object {namespace_name} {{\n{object_body}\n}}\n");
         uwriteln!(self.private_src, "{private_top_level_body}\n");
+        
+        Ok(())
     }
 
     fn export_interface(
@@ -89,40 +91,40 @@ impl WorldGenerator for Kotlin {
     ) -> Result<()> {
         let namespace_name = interface_namespace_name(&resolve, &id, false);
         self.interface_names.insert(id, namespace_name.clone());
-        let mut gen = self.interface(resolve, false, Some(namespace_name.to_string()));
-        gen.interface = Some((id, name));
+        let mut r#gen = self.interface(resolve, false, Some(namespace_name.to_string()));
+        r#gen.interface = Some((id, name));
 
         for (name, ty) in &resolve.interfaces[id].types {
-            gen.define_type(name, *ty);
+            r#gen.define_type(name, *ty);
         }
 
         for (_name, func) in resolve.interfaces[id].functions.iter() {
             if func.kind == FunctionKind::Freestanding {
-                gen.export(func, Some(name));
+                r#gen.export(func, Some(name));
             }
         }
 
-        let object_body =  &gen.src.as_mut_string();
-        let private_top_level_body = &gen.private_top_level_src.as_mut_string();
-        let exports_stubs_body = &gen.export_stubs_src.as_mut_string();
+        let object_body =  &r#gen.src.as_mut_string();
+        let private_top_level_body = &r#gen.private_top_level_src.as_mut_string();
+        let exports_stubs_body = &r#gen.export_stubs_src.as_mut_string();
 
         // TODO(Kotlin): Naming of exports
         uwriteln!(self.src, "interface {namespace_name} {{\n{object_body}\n}}\n");
         uwriteln!(self.export_stubs_src, "object {namespace_name}Impl : {namespace_name} {{\n{exports_stubs_body}\n}}\n");
 
         // if self.opts.generate_stubs {
-        //     let mut gen = self.interface(resolve, false, Some(namespace_name.to_string()));
-        //     gen.interface = Some((id, name));
+        //     let mut r#gen = self.interface(resolve, false, Some(namespace_name.to_string()));
+        //     r#gen.interface = Some((id, name));
         //     for (_name, func) in resolve.interfaces[id].functions.iter() {
         //         if func.kind == FunctionKind::Freestanding {
-        //             let sig = gen.kotlin_signature(func);
-        //             uwriteln!(gen.export_stubs_src, "{sig} {{ TODO() }}");
+        //             let sig = r#gen.kotlin_signature(func);
+        //             uwriteln!(r#gen.export_stubs_src, "{sig} {{ TODO() }}");
         //         }
         //     }
         //     // TODO: Handle resources
         //
         //     // TODO: Generate in a separate file
-        //     let object_body =  &gen.src.as_mut_string();
+        //     let object_body =  &r#gen.src.as_mut_string();
         //     uwriteln!(self.export_stubs_src, "object {namespace_name}Impl {{\n{object_body}\n}}\n");
         // }
 
@@ -140,19 +142,19 @@ impl WorldGenerator for Kotlin {
     ) {
         let name = &resolve.worlds[world].name;
         let interface_name = "__WorldImports".to_string();
-        let mut gen = self.interface(resolve, true, Some(interface_name.clone()));
+        let mut r#gen = self.interface(resolve, true, Some(interface_name.clone()));
 
         for (i, (_name, func)) in funcs.iter().enumerate() {
             if i == 0 {
-                uwriteln!(gen.src, "\n// import_funcs: Imported Functions from `{name}`");
+                uwriteln!(r#gen.src, "\n// import_funcs: Imported Functions from `{name}`");
             }
-            gen.import(func, None);
+            r#gen.import(func, None);
         }
 
-        uwriteln!(gen.gen.src, "object {interface_name} {{");
-        gen.gen.src.push_str(&gen.src);
-        uwriteln!(gen.gen.src, "\n}}\n");
-        gen.gen.private_src.push_str(&gen.private_top_level_src);
+        uwriteln!(r#gen.r#gen.src, "object {interface_name} {{");
+        r#gen.r#gen.src.push_str(&r#gen.src);
+        uwriteln!(r#gen.r#gen.src, "\n}}\n");
+        r#gen.r#gen.private_src.push_str(&r#gen.private_top_level_src);
     }
 
     fn export_funcs(
@@ -165,35 +167,35 @@ impl WorldGenerator for Kotlin {
         let name = &resolve.worlds[world].name;
         let interface_name = "__WorldExports".to_string();
 
-        let mut gen = self.interface(resolve, false, Some(interface_name.clone()));
+        let mut r#gen = self.interface(resolve, false, Some(interface_name.clone()));
 
         for (i, (_name, func)) in funcs.iter().enumerate() {
             if i == 0 {
-                uwriteln!(gen.src, "\n// Exported Functions from `{name}`");
+                uwriteln!(r#gen.src, "\n// Exported Functions from `{name}`");
             }
-            gen.export(func, None);
+            r#gen.export(func, None);
         }
 
-        uwriteln!(gen.gen.src, "interface {interface_name} {{");
-        gen.gen.src.push_str(&gen.src);
-        uwriteln!(gen.gen.src, "\n}}\n");
-        gen.gen.private_src.push_str(&gen.private_top_level_src);
+        uwriteln!(r#gen.r#gen.src, "interface {interface_name} {{");
+        r#gen.r#gen.src.push_str(&r#gen.src);
+        uwriteln!(r#gen.r#gen.src, "\n}}\n");
+        r#gen.r#gen.private_src.push_str(&r#gen.private_top_level_src);
 
-        let exports_stubs_body = &gen.export_stubs_src.as_mut_string();
+        let exports_stubs_body = &r#gen.export_stubs_src.as_mut_string();
 
-        uwriteln!(gen.gen.export_stubs_src, "object {interface_name}Impl : {interface_name} {{\n{exports_stubs_body}\n}}\n");
+        uwriteln!(r#gen.r#gen.export_stubs_src, "object {interface_name}Impl : {interface_name} {{\n{exports_stubs_body}\n}}\n");
 
         // if generate_stubs {
         //     uwriteln!(self.src, "object {interface_name}Impl {{");
         //
-        //     let mut gen = self.interface(resolve, false, Some(interface_name.clone()));
+        //     let mut r#gen = self.interface(resolve, false, Some(interface_name.clone()));
         //     for (_name, func) in funcs.iter() {
-        //         let sig = gen.kotlin_signature(func);
-        //         uwriteln!(gen.gen.export_stubs_src, "{sig} = TODO()\n");
+        //         let sig = r#gen.kotlin_signature(func);
+        //         uwriteln!(r#gen.r#gen.export_stubs_src, "{sig} = TODO()\n");
         //     }
         //
         //     // TODO: Generate in a separate file
-        //     let object_body =  &gen.export_stubs_src.as_mut_string();
+        //     let object_body =  &r#gen.export_stubs_src.as_mut_string();
         // }
 
         Ok(())
@@ -206,11 +208,11 @@ impl WorldGenerator for Kotlin {
         types: &[(&str, TypeId)],
         _files: &mut Files,
     ) {
-        let mut gen = self.interface(resolve, true, None);
+        let mut r#gen = self.interface(resolve, true, None);
         for (name, ty) in types {
-            gen.define_type(name, *ty);
+            r#gen.define_type(name, *ty);
         }
-        gen.gen.src.push_str(&gen.src);
+        r#gen.r#gen.src.push_str(&r#gen.src);
     }
 
     fn finish(&mut self, resolve: &Resolve, id: WorldId, files: &mut Files) -> Result<()> {
@@ -378,7 +380,7 @@ impl Kotlin {
             src: Source::default(),
             private_top_level_src: Source::default(),
             export_stubs_src: Source::default(),
-            gen: self,
+            r#gen: self,
             resolve,
             interface: None,
             in_import: in_import,
@@ -405,7 +407,7 @@ struct InterfaceGenerator<'a> {
     private_top_level_src: Source,
     export_stubs_src: Source,
     in_import: bool,
-    gen: &'a mut Kotlin,
+    r#gen: &'a mut Kotlin,
     resolve: &'a Resolve,
     interface: Option<(InterfaceId, &'a WorldKey)>,
     namespace_name: Option<String>,
@@ -439,7 +441,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     fn type_resource(&mut self, type_id: TypeId, name: &str, docs: &Docs) {
 
         if !self.in_import {
-            self.gen.exported_resources.insert(type_id);
+            self.r#gen.exported_resources.insert(type_id);
         }
 
         let camel = name.to_upper_camel_case();
@@ -662,17 +664,29 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     fn type_result(&mut self, _id: TypeId, _name: &str, _result: &Result_, _docs: &Docs) {}
     fn type_list(&mut self, _id: TypeId, _name: &str, _ty: &Type, _docs: &Docs) {}
     fn type_builtin(&mut self, _id: TypeId, _name: &str, _ty: &Type, _docs: &Docs) {}
+
+    fn type_fixed_length_list(&mut self, id: TypeId, name: &str, ty: &Type, size: u32, docs: &Docs) {
+        todo!("not in old prototype")
+    }
+
+    fn type_future(&mut self, id: TypeId, name: &str, ty: &Option<Type>, docs: &Docs) {
+        todo!("not in old prototype")
+    }
+
+    fn type_stream(&mut self, id: TypeId, name: &str, ty: &Option<Type>, docs: &Docs) {
+        todo!("not in old prototype")
+    }
 }
 
 impl InterfaceGenerator<'_> {
     fn resource_import_prefix(&self, id: &TypeId) -> String {
         let mut result = String::new();
-        let is_exported = self.gen.exported_resources.contains(&id);
+        let is_exported = self.r#gen.exported_resources.contains(&id);
         let ty = &self.resolve.types[*id];
 
         match &ty.owner {
             TypeOwner::Interface(ty_interface_id) => {
-                let namespace_name = &self.gen.interface_names[ty_interface_id];
+                let namespace_name = &self.r#gen.interface_names[ty_interface_id];
                 if is_exported {
                     uwrite!(result, "{namespace_name}Impl");
                 } else {
@@ -728,7 +742,8 @@ impl InterfaceGenerator<'_> {
             Type::F32 => dst.push_str("Float"),
             Type::F64 => dst.push_str("Double"),
             Type::String => dst.push_str("String"),
-            Type::Id(id) => self.push_type_id_name(id, dst)
+            Type::Id(id) => self.push_type_id_name(id, dst),
+            Type::ErrorContext => {todo!("not in old prototype")}
         }
     }
 
@@ -741,10 +756,10 @@ impl InterfaceGenerator<'_> {
             | TypeDefKind::Flags(_)
             | TypeDefKind::Enum(_)
             | TypeDefKind::Variant(_) => {
-                let is_exported_resource = self.gen.exported_resources.contains(id);
+                let is_exported_resource = self.r#gen.exported_resources.contains(id);
                 match &ty.owner {
                     TypeOwner::Interface(ty_interface_id) => {
-                        let namespace_name = &self.gen.interface_names[ty_interface_id];
+                        let namespace_name = &self.r#gen.interface_names[ty_interface_id];
                         if is_exported_resource {
                             uwrite!(dst, "{namespace_name}Impl.");  // Exported resources live only in Implementation namespace
                         } else {
@@ -835,6 +850,8 @@ impl InterfaceGenerator<'_> {
                 self.push_type_name(&Type::Id(*resource), dst);
             }
             TypeDefKind::Unknown => unreachable!(),
+            TypeDefKind::Map(_, _) => {todo!("not in old prototype")}
+            TypeDefKind::FixedLengthList(_, _) => {todo!("not in old prototype")}
         }
     }
 
@@ -856,7 +873,7 @@ impl InterfaceGenerator<'_> {
             func.name
         );
         let name = self.kotlin_fun_name(func);
-        let import_name = self.gen.names.tmp(&format!("__wasm_import_{name}",));
+        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}",));
         self.private_top_level_src.push_str("internal external fun ");
         self.private_top_level_src.push_str(&import_name);
         self.private_top_level_src.push_str("(");
@@ -893,22 +910,23 @@ impl InterfaceGenerator<'_> {
         self.src.push_str(" withScopedMemoryAllocator { allocator -> \n");
 
         let mut f = FunctionBindgen::new(self, &import_name, func.kind.clone());
-        for (idx, (name, _)) in func.params.iter().enumerate() {
+        for (idx, param) in func.params.iter().enumerate() {
             let param = if idx == 0 && matches!(func.kind, FunctionKind::Method(_)) {
                 "this".to_string()
             } else {
-                to_kotlin_ident(name)
+                to_kotlin_ident(&*param.name)
             };
             f.locals.insert(&param).unwrap();
             f.params.push(param.clone());
         }
 
         abi::call(
-            f.gen.resolve,
+            f.r#gen.resolve,
             AbiVariant::GuestImport,
             LiftLower::LowerArgsLiftResults,
             func,
             &mut f,
+            func.kind.is_async(), // TODO async, not supported yet
         );
 
         let FunctionBindgen {
@@ -930,7 +948,7 @@ impl InterfaceGenerator<'_> {
         let wasm_sig = self.resolve.wasm_signature(AbiVariant::GuestExport, func);
 
         let core_module_name = interface_name.map(|s| self.resolve.name_world_key(s));
-        let export_name = func.core_export_name(core_module_name.as_deref());
+        let export_name = func.core_export_name(core_module_name.as_deref(), /* TODO check what's right here */ Mangling::Legacy);
         {
             let kotlin_sig = self.kotlin_signature(func);
             if !matches!(func.kind, FunctionKind::Constructor(_)) {  // Constructor in exported abstract resource class is not needed
@@ -946,10 +964,10 @@ impl InterfaceGenerator<'_> {
             "\n@WasmExport(\"{export_name}\")"
         );
         let name = self.kotlin_fun_name(func);
-        let export_fun_name = self.gen.names.tmp(&format!("__wasm_export_{name}"));
+        let export_fun_name = self.r#gen.names.tmp(&format!("__wasm_export_{name}"));
 
         let mut f = FunctionBindgen::new(self, &export_fun_name, func.kind.clone());
-        let s: &mut Source = &mut f.gen.private_top_level_src;
+        let s: &mut Source = &mut f.r#gen.private_top_level_src;
         s.push_str("fun ");
         s.push_str(&export_fun_name);
         s.push_str("(");
@@ -976,11 +994,12 @@ impl InterfaceGenerator<'_> {
 
         // Perform all lifting/lowering and append it to our src.
         abi::call(
-            f.gen.resolve,
+            f.r#gen.resolve,
             AbiVariant::GuestExport,
             LiftLower::LiftArgsLowerResults,
             func,
             &mut f,
+            func.kind.is_async(), // TODO async, not supported yet
         );
         let FunctionBindgen { src, .. } = f;
         self.private_top_level_src.push_str(&src);
@@ -999,30 +1018,35 @@ impl InterfaceGenerator<'_> {
             result.push_str(&name);
         }
         result.push_str("(");
-        for (i, (name, ty)) in func.params.iter().enumerate() {
+        for (i, param) in func.params.iter().enumerate() {
             if let FunctionKind::Method(_) = func.kind {
                 if i == 0 { continue }
                 if i > 1 { result.push_str(", "); }
             } else {
                 if i > 0 { result.push_str(", "); }
             }
-            result.push_str(&to_kotlin_ident(name));
+            result.push_str(&to_kotlin_ident(&*param.name));
             result.push_str(": ");
-            result.push_str(self.type_name(ty).as_str());
+            result.push_str(self.type_name(&param.ty).as_str());
         }
         result.push_str(")");
         if let FunctionKind::Constructor(_) = func.kind {
             return result;
         }
 
-        result.push_str(": ");
-        match &func.results {
+        match &func.result {
+            None => {} // TODO explicitly return unit?
+            Some(ty) => {
+                result.push_str(": ");
+                self.push_type_name(ty, &mut result);
+            }
+            /*
             Results::Named(params) => {
                 match params.len() {
                     0 => result.push_str("Unit"),
                     1 => result.push_str(self.type_name(&params[0].1).as_str()),
                     count => {
-                        self.gen.tuple_counts.insert(count);
+                        self.r#gen.tuple_counts.insert(count);
                         uwrite!(
                             result,
                             "Tuple{count}<{}>",
@@ -1038,6 +1062,7 @@ impl InterfaceGenerator<'_> {
             Results::Anon(ty) => {
                 result.push_str(self.type_name(ty).as_str());
             }
+             */
         }
         result
     }
@@ -1053,7 +1078,7 @@ fn kdoc(docs: &Docs) -> String {
 }
 
 struct FunctionBindgen<'a, 'b> {
-    gen: &'a mut InterfaceGenerator<'b>,
+    r#gen: &'a mut InterfaceGenerator<'b>,
     kind: FunctionKind,
     locals: Ns,
     src: Source,
@@ -1066,12 +1091,12 @@ struct FunctionBindgen<'a, 'b> {
 
 impl<'a, 'b> FunctionBindgen<'a, 'b> {
     fn new(
-        gen: &'a mut InterfaceGenerator<'b>,
+        r#gen: &'a mut InterfaceGenerator<'b>,
         func_to_call: &'a str,
         kind: FunctionKind,
     ) -> FunctionBindgen<'a, 'b> {
         FunctionBindgen {
-            gen,
+            r#gen,
             kind,
             locals: Default::default(),
             src: Default::default(),
@@ -1083,25 +1108,29 @@ impl<'a, 'b> FunctionBindgen<'a, 'b> {
         }
     }
 
-    fn load(&mut self, ty: &str, offset: i32, operands: &[String], results: &mut Vec<String>) {
-        results.push(format!("({} + {offset}).ptr.load{ty}()", operands[0]));
+    fn load(&mut self, ty: &str, offset: &ArchitectureSize, operands: &[String], results: &mut Vec<String>) {
+        // TODO see listlower
+        let offset_wasm32 = offset.format("4");
+        results.push(format!("({} + {offset_wasm32}).ptr.load{ty}()", operands[0]));
     }
 
-    fn load_ext(&mut self, ty: &str, offset: i32, operands: &[String], results: &mut Vec<String>) {
+    fn load_ext(&mut self, ty: &str, offset: &ArchitectureSize, operands: &[String], results: &mut Vec<String>) {
         self.load(ty, offset, operands, results);
         let result = results.pop().unwrap();
         results.push(format!("{}.toInt()", result));
     }
 
-    fn store_impl(&mut self, ty: &str, offset: i32, address: &String, value: &String) {
-        uwriteln!(self.src, "({address} + {offset}).ptr.store{ty}({value})");
+    fn store_impl(&mut self, ty: &str, offset: &ArchitectureSize, address: &String, value: &String) {
+        // TODO see listlower
+        let offset_wasm32 = offset.format("4");
+        uwriteln!(self.src, "({address} + {offset_wasm32}).ptr.store{ty}({value})");
     }
 
-    fn store(&mut self, ty: &str, offset: i32, operands: &[String]) {
+    fn store(&mut self, ty: &str, offset: &ArchitectureSize, operands: &[String]) {
         self.store_impl(ty, offset, &operands[1], &operands[0])
     }
 
-    fn store_converted(&mut self, ty: &str, offset: i32, operands: &[String]) {
+    fn store_converted(&mut self, ty: &str, offset: &ArchitectureSize, operands: &[String]) {
         let converted_value = format!("{}.to{ty}()", operands[0]);
         self.store_impl(ty, offset, &operands[1], &converted_value)
     }
@@ -1184,7 +1213,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             }
 
             Instruction::RecordLift { ty, .. } => {
-                let name = self.gen.type_name(&Type::Id(*ty));
+                let name = self.r#gen.type_name(&Type::Id(*ty));
                 let mut result = format!("{name}(\n");
                 for op in operands {
                     uwriteln!(result, "{},", op);
@@ -1202,8 +1231,8 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         results.push(operands[0].clone());
                     }
                     count => {
-                        let name = self.gen.type_name(&Type::Id(*ty));
-                        self.gen.gen.tuple_counts.insert(count);
+                        let name = self.r#gen.type_name(&Type::Id(*ty));
+                        self.r#gen.r#gen.tuple_counts.insert(count);
                         let mut result = format!("{name}(\n");
                         for op in operands {
                             uwriteln!(result, "{},", op);
@@ -1231,7 +1260,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         results.push(format!("{op}.third"));
                     }
                     len => {
-                        self.gen.gen.tuple_counts.insert(len);
+                        self.r#gen.r#gen.tuple_counts.insert(len);
                         for i in 0..len {
                             results.push(format!("{op}.f{i}"));
                         }
@@ -1246,9 +1275,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let (Handle::Own(ty) | Handle::Borrow(ty)) = handle;
                 let is_own = matches!(handle, Handle::Own(_));
                 let handle = self.locals.tmp("handle");
-                let id = dealias(self.gen.resolve, *ty);
-                let imported_function_prefix = self.gen.resource_import_prefix(&id);
-                let is_exported = self.gen.gen.exported_resources.contains(&id);
+                let id = dealias(self.r#gen.resolve, *ty);
+                let imported_function_prefix = self.r#gen.resource_import_prefix(&id);
+                let is_exported = self.r#gen.r#gen.exported_resources.contains(&id);
                 let op = &operands[0];
                 uwriteln!(self.src, "var {handle} = {op}.__handle.value;");
 
@@ -1275,11 +1304,11 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let (Handle::Own(ty) | Handle::Borrow(ty)) = handle;
                 let is_own = matches!(handle, Handle::Own(_));
                 let resource = self.locals.tmp("resource");
-                let id = dealias(self.gen.resolve, *ty);
-                let imported_function_prefix = self.gen.resource_import_prefix(&id);
-                let is_exported = self.gen.gen.exported_resources.contains(&id);
+                let id = dealias(self.r#gen.resolve, *ty);
+                let imported_function_prefix = self.r#gen.resource_import_prefix(&id);
+                let is_exported = self.r#gen.r#gen.exported_resources.contains(&id);
                 let op = &operands[0];
-                let resource_type_name = self.gen.type_name(&Type::Id(*ty));
+                let resource_type_name = self.r#gen.type_name(&Type::Id(*ty));
 
                 if is_exported {
                     if is_own {
@@ -1326,7 +1355,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             ,
 
             Instruction::FlagsLift { flags, ty, .. } => {
-                let class_name = self.gen.type_name(&Type::Id(*ty));
+                let class_name = self.r#gen.type_name(&Type::Id(*ty));
                 let op0 = &operands[0];
                 match flags.repr() {
                     FlagsRepr::U8
@@ -1381,7 +1410,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
                 let op0_name = self.locals.tmp("x");
 
-                let variant_class_name = self.gen.type_id_name(ty);
+                let variant_class_name = self.r#gen.type_id_name(ty);
 
                 uwriteln!(self.src, "when (val {op0_name} = {op0}) {{");
                 for ((case, (block, block_results)), payload) in
@@ -1411,7 +1440,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     .drain(self.blocks.len() - variant.cases.len()..)
                     .collect::<Vec<_>>();
 
-                let variant_class_name = self.gen.type_id_name(ty);
+                let variant_class_name = self.r#gen.type_id_name(ty);
                 let result = self.locals.tmp("variant");
                 let op0 = &operands[0];
                 uwriteln!(self.src, "val {result} = when ({op0}) {{");
@@ -1466,7 +1495,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let op0 = &operands[0];
 
                 let option_name = self.locals.tmp("option");
-                if is_option_type(self.gen.resolve, payload) {
+                if is_option_type(self.r#gen.resolve, payload) {
                     self.src.push_str(format!(
                         "\
                     val {option_name} = {op0}
@@ -1499,7 +1528,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let some_result = &some_results[0];
                 let result = self.locals.tmp("option");
 
-                if is_option_type(self.gen.resolve, payload) {
+                if is_option_type(self.r#gen.resolve, payload) {
                     uwriteln!(
                         self.src,
                         "val {result} = if ({op0} == 1) {{
@@ -1552,7 +1581,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     String::new()
                 };
                 let bind_err = if let Some(err_ty) = &result.err {
-                    let err_kt_ty_name = self.gen.type_name(err_ty);
+                    let err_kt_ty_name = self.r#gen.type_name(err_ty);
                     format!("val {err_payload} = ({op0}.exceptionOrNull() as ComponentException).value as {err_kt_ty_name}\n")
                 } else {
                     String::new()
@@ -1589,7 +1618,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let result_tmp = self.locals.tmp("result");
 
 
-                let kt_result_type: String = self.gen.type_name(&Type::Id(*ty)).clone();
+                let kt_result_type: String = self.r#gen.type_name(&Type::Id(*ty)).clone();
                 let ok_result = if result.ok.is_some() {
                     let ok_result = &ok_results[0];
                     format!("{kt_result_type}.success({ok_result})")
@@ -1618,7 +1647,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::EnumLower { .. } => results.push(format!("{}.ordinal", operands[0])),
             Instruction::EnumLift { ty, .. } => {
                 let op0 = &operands[0];
-                let enum_class_name= self.gen.type_name(&Type::Id(*ty)).clone();
+                let enum_class_name= self.r#gen.type_name(&Type::Id(*ty)).clone();
                 results.push(format!("{enum_class_name}.values()[{op0}]"));
             },
 
@@ -1655,17 +1684,19 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let (body, _) = self.blocks.pop().unwrap();
 
                 let op = &operands[0];
-                let size = self.gen.gen.sizes.size(element);
-                let align = self.gen.gen.sizes.align(element);
+                let size_wasm32 = self.r#gen.r#gen.sizes.size(element).format("4"); // assuming 4 as the pointer size
+                let align_wasm32 = self.r#gen.r#gen.sizes.align(element).align_wasm32();
                 let address = self.locals.tmp("address");
                 let index = self.locals.tmp("index");
+
+                // TODO think about wasm32 vs 64
 
                 uwrite!(
                     self.src,
                     "
-                    val {address} = allocator.allocate({op}.size * {size} /*, align={align}*/).address.toInt()
+                    val {address} = allocator.allocate({op}.size * {size_wasm32} /*, align_wasm32={align_wasm32}*/).address.toInt()
                     for (({index}, el) in {op}.withIndex()) {{
-                        val base = {address} + ({index} * {size})
+                        val base = {address} + ({index} * {size_wasm32})
                         {body}
                     }}
                     "
@@ -1680,8 +1711,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let address = &operands[0];
                 let length = &operands[1];
                 let list = self.locals.tmp("list");
-                let ty = self.gen.type_name(element);
-                let size = self.gen.gen.sizes.size(element);
+                let ty = self.r#gen.type_name(element);
+                // TODO see listlower
+                let size_wasm32 = self.r#gen.r#gen.sizes.size(element).format("4");
                 let index = self.locals.tmp("i");
 
                 let result = &block_results[0];
@@ -1692,7 +1724,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     "
                     val {list} = ArrayList<{ty}>({length})
                     for ({index} in 0 until {length}) {{
-                        val base = ({address}) + ({index} * {size})
+                        val base = ({address}) + ({index} * {size_wasm32})
                         {body}
                         {list}.add({result})
                     }}
@@ -1729,18 +1761,21 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 self.src.push_str("freeAllComponentModelReallocAllocatedMemory();\n");
             }
 
-            Instruction::CallInterface { func } => {
-                let (assignment, destructure) = match func.results.len() {
-                    0 => (String::new(), String::new()),
-                    1 => {
-                        let ty = self.gen.type_name(func.results.iter_types().next().unwrap());
+            Instruction::CallInterface { func, async_ } => {
+                // TODO async
+                debug_assert_eq!(*async_, false);
+                let (assignment, destructure) = match func.result {
+                    None => (String::new(), String::new()),
+                    Some(ty) => {
+                        let ty_str = self.r#gen.type_name(&ty);
                         let result = self.locals.tmp("result");
-                        let assignment = format!("val {result}: {ty} = ");
+                        let assignment = format!("val {result}: {ty_str} = ");
                         results.push(result);
                         (assignment, String::new())
                     }
+                    /*
                     count => {
-                        self.gen.gen.tuple_counts.insert(count);
+                        self.r#gen.r#gen.tuple_counts.insert(count);
                         let result = self.locals.tmp("result");
                         let assignment = format!("val {result} = ");
 
@@ -1749,7 +1784,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                             .iter_types()
                             .enumerate()
                             .map(|(index, ty)| {
-                                let ty = self.gen.type_name(ty);
+                                let ty = self.r#gen.type_name(ty);
                                 let my_result = self.locals.tmp("result");
                                 let assignment = format!("val {my_result}: {ty} = {result}.f{index}");
                                 results.push(my_result);
@@ -1760,13 +1795,14 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
                         (assignment, destructure)
                     }
+                     */
                 };
 
-                let call_namespace = match &self.gen.namespace_name {
+                let call_namespace = match &self.r#gen.namespace_name {
                     None => String::new(),
                     Some(name) => format!("{name}Impl.")
                 };
-                let name = self.gen.kotlin_fun_name(func);
+                let name = self.r#gen.kotlin_fun_name(func);
 
                 uwrite!(self.src, "{assignment}");
                 match func.kind {
@@ -1781,14 +1817,15 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     }
                     FunctionKind::Static(resource_type) => {
                         let args = operands.join(", ");
-                        let resource_class_name = self.gen.type_id_name(&resource_type);
+                        let resource_class_name = self.r#gen.type_id_name(&resource_type);
                         uwriteln!(self.src, "{resource_class_name}.{name}({args})");
                     }
                     FunctionKind::Constructor(resource_type) => {
-                        let resource_class_name = self.gen.type_id_name(&resource_type);
+                        let resource_class_name = self.r#gen.type_id_name(&resource_type);
                         let args = operands.join(", ");
                         uwriteln!(self.src, "{resource_class_name}({args})");
-                    }
+                    },
+                    FunctionKind::AsyncFreestanding | FunctionKind::AsyncMethod(_) | FunctionKind::AsyncStatic(_) => todo!("not in old prototype")
                 }
                 uwriteln!(self.src, "{destructure}");
             }
@@ -1798,7 +1835,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     1 => uwriteln!(self.src, "return {}", operands[0]),
                     count => {
                         let results = operands.join(", ");
-                        self.gen.gen.tuple_counts.insert(count);
+                        self.r#gen.r#gen.tuple_counts.insert(count);
                         uwriteln!(self.src, "return Tuple{count}({results})")
                     }
                 }
@@ -1806,22 +1843,22 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
             Instruction::I32Load { offset } |
             Instruction::PointerLoad { offset } |
-            Instruction::LengthLoad { offset } => self.load("Int", *offset, operands, results),
-            Instruction::I64Load { offset } => self.load("Long", *offset, operands, results),
-            Instruction::F32Load { offset } => self.load("Float", *offset, operands, results),
-            Instruction::F64Load { offset } => self.load("Double", *offset, operands, results),
-            Instruction::I32Load8U { offset } => self.load_ext("UByte", *offset, operands, results),
-            Instruction::I32Load8S { offset } => self.load_ext("Byte", *offset, operands, results),
-            Instruction::I32Load16U { offset } => self.load_ext("UShort", *offset, operands, results),
-            Instruction::I32Load16S { offset } => self.load_ext("Short", *offset, operands, results),
+            Instruction::LengthLoad { offset } => self.load("Int", offset, operands, results),
+            Instruction::I64Load { offset } => self.load("Long", offset, operands, results),
+            Instruction::F32Load { offset } => self.load("Float", offset, operands, results),
+            Instruction::F64Load { offset } => self.load("Double", offset, operands, results),
+            Instruction::I32Load8U { offset } => self.load_ext("UByte", offset, operands, results),
+            Instruction::I32Load8S { offset } => self.load_ext("Byte", offset, operands, results),
+            Instruction::I32Load16U { offset } => self.load_ext("UShort", offset, operands, results),
+            Instruction::I32Load16S { offset } => self.load_ext("Short", offset, operands, results),
             Instruction::I32Store { offset } |
             Instruction::PointerStore { offset } |
-            Instruction::LengthStore { offset } => self.store("Int", *offset, operands),
-            Instruction::I64Store { offset } => self.store("Long", *offset, operands),
-            Instruction::F32Store { offset } => self.store("Float", *offset, operands),
-            Instruction::F64Store { offset } => self.store("Double", *offset, operands),
-            Instruction::I32Store8 { offset } => self.store_converted("Byte", *offset, operands),
-            Instruction::I32Store16 { offset } => self.store_converted("Short", *offset, operands),
+            Instruction::LengthStore { offset } => self.store("Int", offset, operands),
+            Instruction::I64Store { offset } => self.store("Long", offset, operands),
+            Instruction::F32Store { offset } => self.store("Float", offset, operands),
+            Instruction::F64Store { offset } => self.store("Double", offset, operands),
+            Instruction::I32Store8 { offset } => self.store_converted("Byte", offset, operands),
+            Instruction::I32Store16 { offset } => self.store_converted("Short", offset, operands),
 
             Instruction::GuestDeallocate { .. } => {
                 uwriteln!(self.src, "// GuestDeallocate({})", operands[0]);
@@ -1849,13 +1886,33 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 uwrite!(self.src, "{body}");
             }
 
-            i => unimplemented!("{:?}", i),
+            // i => unimplemented!("{:?}", i),
+            Instruction::FixedLengthListLift { .. }  |
+            Instruction::FixedLengthListLower { .. }  |
+            Instruction::FixedLengthListLowerToMemory { .. }  |
+            Instruction::FixedLengthListLiftFromMemory { .. }  |
+            Instruction::FutureLower { .. }  |
+            Instruction::FutureLift { .. }  |
+            Instruction::StreamLower { .. }  |
+            Instruction::StreamLift { .. }  |
+            Instruction::ErrorContextLower  |
+            Instruction::ErrorContextLift  |
+            Instruction::Malloc { .. }  |
+            Instruction::DropHandle { .. }  |
+            Instruction::AsyncTaskReturn { .. }  => todo!("not in old prototype"),
+            Instruction::Flush { amt } => {
+                // TODO not sure this is right, this is from the "other" rebase: https://github.com/Kotlin/wit-bindgen/pull/1/changes/a175db3d9c54c715fa6ccb713b5bdfa901cca21e#diff-099a6665acb2a63446a1f595cc2d6be28c15da4e0c37bfea976ebd52648aeccfR1861-R1863
+                results.extend(operands.iter().take(*amt).cloned());
+            }
         }
     }
 
-    fn return_pointer(&mut self, size: usize, align: usize) -> String {
+    fn return_pointer(&mut self, size: ArchitectureSize, align: Alignment) -> String {
+        // TODO see listlower
+        let size_wasm32 = size.format("4");
+        let align = align.align_wasm32();
         let ptr = self.locals.tmp("ptr");
-        uwriteln!(self.src, "val {ptr} = /* RETURN_ADDRESS_ALLOC(size={size}, align={align})*/ allocator.allocate({size}).address.toInt()");
+        uwriteln!(self.src, "val {ptr} = /* RETURN_ADDRESS_ALLOC(size_wasm32={size_wasm32}, align={align})*/ allocator.allocate({size_wasm32}).address.toInt()");
         ptr
     }
 
@@ -1871,7 +1928,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
     }
 
     fn sizes(&self) -> &SizeAlign {
-        &self.gen.gen.sizes
+        &self.r#gen.r#gen.sizes
     }
 
     fn is_list_canonical(&self, _: &Resolve, _: &Type) -> bool {
