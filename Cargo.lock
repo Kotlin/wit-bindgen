@@ -167,7 +167,7 @@ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
 name = "codegen-macro"
-version = "0.0.0"
+version = "0.53.1"
 dependencies = [
  "heck",
  "quote",
@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "test-helpers"
-version = "0.0.0"
+version = "0.53.1"
 dependencies = [
  "codegen-macro",
  "wasm-encoder 0.245.1",
@@ -1497,6 +1497,7 @@ dependencies = [
  "wit-bindgen-cpp",
  "wit-bindgen-csharp",
  "wit-bindgen-go",
+ "wit-bindgen-kotlin",
  "wit-bindgen-markdown",
  "wit-bindgen-moonbit",
  "wit-bindgen-rust",
@@ -1555,6 +1556,20 @@ dependencies = [
  "wasm-metadata 0.245.1",
  "wit-bindgen-core",
  "wit-component",
+]
+
+[[package]]
+name = "wit-bindgen-kotlin"
+version = "0.53.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "heck",
+ "test-helpers",
+ "wasm-metadata 0.245.1",
+ "wit-bindgen-core",
+ "wit-component",
+ "wit-parser",
 ]
 
 [[package]]
