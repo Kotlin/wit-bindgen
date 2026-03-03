@@ -1,12 +1,11 @@
 use anyhow::Result;
 use heck::*;
 use std::collections::{HashMap, HashSet};
-use std::fmt::{format, Write};
-use std::fs::write;
+use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::mem;
 use wit_bindgen_core::abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType};
-use wit_bindgen_core::{uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns, WorldGenerator, Source, dealias};
+use wit_bindgen_core::{dealias, uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns, Source, WorldGenerator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum OutsideKind {
@@ -109,9 +108,19 @@ pub struct ResourceInfo {
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "clap", derive(clap::Args))]
 pub struct Opts {
-    /// Generate subs export implementation
+    /// Generate stubs export implementation
     #[cfg_attr(feature = "clap", arg(long))]
     pub generate_stubs: bool,
+
+    // TODO think about exact default
+    /// Which kotlin `package` declarations to generate at the start of files
+    #[cfg_attr(feature = "clap", arg(long, default_value = "bindings"))]
+    pub kotlin_package_name: String,
+
+    /// Which kotlin packages to import at the start of files.
+    /// Comma-separated list of package names
+    #[cfg_attr(feature = "clap", arg(long, value_delimiter = ','))]
+    pub kotlin_imports: Option<Vec<String>>,
 }
 
 impl Opts {
@@ -225,12 +234,34 @@ impl WorldGenerator for Kotlin {
 
         let version = env!("CARGO_PKG_VERSION");
 
+        let optin_declaration = "@file:OptIn(UnsafeWasmMemoryApi::class, ExperimentalWasmInterop::class)\n";
+        let custom_kotlin_package_declaration = format!("package {}\n", self.opts.kotlin_package_name);
+        let custom_kotlin_imports_declaration = {
+            // TODO maybe do backticks for package name?
+            let mut kotlin_imports = String::new();
+
+            let kotlin_imports_vec = match &self.opts.kotlin_imports {
+                Some(imports) => imports,
+                None => &vec![],
+            };
+            for kotlin_import in kotlin_imports_vec {
+                kotlin_imports.push_str("import ");
+                kotlin_imports.push_str(kotlin_import);
+                kotlin_imports.push_str("\n");
+            }
+
+            kotlin_imports
+        };
+
         let mut write_component_support_kt = ||{
             let mut support_kt_str = Source::default();
+
+            wit_bindgen_core::generated_preamble(&mut support_kt_str, version);
             uwriteln!(support_kt_str,
             "
-            @file:OptIn(UnsafeWasmMemoryApi::class)
-
+            {optin_declaration}
+            {custom_kotlin_package_declaration}
+            {custom_kotlin_imports_declaration}
             import kotlin.wasm.unsafe.*
             class ComponentException(val value: Any?) : Throwable()
 
@@ -335,17 +366,18 @@ impl WorldGenerator for Kotlin {
                 }
                 uwriteln!(support_kt_str, ")");
             }
-            files.push(&format!("ComponentSupport.kt"), support_kt_str.as_bytes());
+            files.push("ComponentSupport.kt", support_kt_str.as_bytes());
         };
         write_component_support_kt();
-
 
         let mut kt_str = Source::default();
         wit_bindgen_core::generated_preamble(&mut kt_str, version);
 
         uwriteln!(kt_str,
             "
-            @file:OptIn(UnsafeWasmMemoryApi::class)
+            {optin_declaration}
+            {custom_kotlin_package_declaration}
+            {custom_kotlin_imports_declaration}
             import kotlin.wasm.unsafe.*
             "
         );
@@ -368,7 +400,9 @@ impl WorldGenerator for Kotlin {
 
         uwriteln!(private_kt_str,
             "
-            @file:OptIn(UnsafeWasmMemoryApi::class)
+            {optin_declaration}
+            {custom_kotlin_package_declaration}
+            {custom_kotlin_imports_declaration}
             import kotlin.wasm.unsafe.*
             "
         );
@@ -378,6 +412,7 @@ impl WorldGenerator for Kotlin {
         if self.opts.generate_stubs {
             let mut stubs_kt = Source::default();
             wit_bindgen_core::generated_preamble(&mut stubs_kt, version);
+            // TODO package/imports for export stubs implementation. Maybe just use same, because outddir is same anyway?
             stubs_kt.push_str(&self.export_stubs_src);
             files.push(&format!("{snake}Impl.kt"), stubs_kt.as_bytes());
         }
