@@ -443,12 +443,15 @@ impl Kotlin {
     fn import_export_interface(&mut self, resolve: &Resolve, referenced_interface: ReferencedInterface, outside_kind: OutsideKind){
         let namespace_name = referenced_interface.kotlin_name;
 
+        let kotlin_package = self.opts.kotlin_package_name.clone();
+
         let mut r#gen = self.interface(resolve, outside_kind, Some(namespace_name.clone()));
         let world_key = WorldKey::Interface(referenced_interface.id);
         r#gen.interface = Some((referenced_interface.id, &world_key));
 
+
         if outside_kind.is_imported() {
-            r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {namespace_name}{{ //<editor-fold defaultstate=\"collapsed\" desc=\"r#generated Import Code\">\n").as_str());
+            r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {kotlin_package}.{namespace_name}{{ //<editor-fold defaultstate=\"collapsed\" desc=\"r#generated Import Code\">\n").as_str());
         }
 
 
@@ -456,7 +459,7 @@ impl Kotlin {
             // TODO non-freestanding
             if func.kind == FunctionKind::Freestanding {
                 if outside_kind.is_imported() {
-                    r#gen.import(func, Some(&world_key));
+                    r#gen.import(func, Some(&world_key), /* override the interface's methods */ true);
                 }
                 if outside_kind.is_exported() {
                     // this doesn't write anything to the actual source anymore
@@ -671,7 +674,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             match f.kind {
                 FunctionKind::Method(id) | FunctionKind::Constructor(id) if id == type_id => {
                     if self.outside_kind.is_imported() {
-                        self.import(f, interface_name);
+                        self.import(f, interface_name, /* in resources: dont override */ false);
                     } else {
                         self.export(f, interface_name);
                     }
@@ -691,7 +694,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             match f.kind {
                 FunctionKind::Static(id) if id == type_id => {
                     if self.outside_kind.is_imported() {
-                        self.import(f, interface_name);
+                        self.import(f, interface_name, /* in resources: dont override */ false);
                     } else {
                         self.export(f, interface_name);
                     }
@@ -991,7 +994,7 @@ impl InterfaceGenerator<'_> {
         to_kotlin_ident(func.item_name())
     }
 
-    fn import(&mut self, func: &Function, interface_name: Option<&WorldKey>) {
+    fn import(&mut self, func: &Function, interface_name: Option<&WorldKey>, annotate_methods_as_override:bool) {
         let sig = self.resolve.wasm_signature(AbiVariant::GuestImport, func);
         self.private_top_level_src.push_str("\n");
 
@@ -1025,7 +1028,10 @@ impl InterfaceGenerator<'_> {
         self.private_top_level_src.push_str("\n");
 
         self.src.push_str(kdoc(&func.docs).as_str());
-        self.src.push_str("override ");
+        if annotate_methods_as_override {
+            self.src.push_str("override ");
+        }
+
         {
             let sig = self.kotlin_signature(func);
             self.src.push_str(sig.as_str());
