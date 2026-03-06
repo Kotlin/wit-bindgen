@@ -1008,6 +1008,7 @@ impl InterfaceGenerator<'_> {
             func.name
         );
         let name = self.kotlin_fun_name(func);
+        // TODO the .tmp call introduces non-determinism when it actually solves naming conflicts, maybe try to change that
         let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}",));
         self.private_top_level_src.push_str("internal external fun ");
         self.private_top_level_src.push_str(&import_name);
