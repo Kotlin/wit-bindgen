@@ -234,7 +234,7 @@ impl WorldGenerator for Kotlin {
 
         let version = env!("CARGO_PKG_VERSION");
 
-        let optin_declaration = "@file:OptIn(UnsafeWasmMemoryApi::class, ExperimentalWasmInterop::class)\n";
+        let optin_declaration = "@file:OptIn(UnsafeWasmMemoryApi::class, ExperimentalWasmInterop::class, ComponentModelInternalApi::class)\n";
         let custom_kotlin_package_declaration = format!("package {}\n", self.opts.kotlin_package_name);
         let custom_kotlin_imports_declaration = {
             // TODO maybe do backticks for package name?
