@@ -349,6 +349,10 @@ impl WorldGenerator for Kotlin {
                     return \"RepTable(firstVacant=${{firstVacant}}, list = $list)\"
                 }}
             }}
+
+            // Annotations
+            annotation class WitInterface(val package_: String)
+            annotation class WitImport
             "
             );
 
