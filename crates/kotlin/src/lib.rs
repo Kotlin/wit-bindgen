@@ -805,15 +805,15 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     fn type_builtin(&mut self, _id: TypeId, _name: &str, _ty: &Type, _docs: &Docs) {}
 
     fn type_fixed_length_list(&mut self, id: TypeId, name: &str, ty: &Type, size: u32, docs: &Docs) {
-        todo!("not in old prototype")
+        todo!()
     }
 
     fn type_future(&mut self, id: TypeId, name: &str, ty: &Option<Type>, docs: &Docs) {
-        todo!("not in old prototype")
+        todo!()
     }
 
     fn type_stream(&mut self, id: TypeId, name: &str, ty: &Option<Type>, docs: &Docs) {
-        todo!("not in old prototype")
+        todo!()
     }
 }
 
@@ -882,7 +882,7 @@ impl InterfaceGenerator<'_> {
             Type::F64 => dst.push_str("Double"),
             Type::String => dst.push_str("String"),
             Type::Id(id) => self.push_type_id_name(id, dst),
-            Type::ErrorContext => {todo!("not in old prototype")}
+            Type::ErrorContext => {todo!()}
         }
     }
 
@@ -989,8 +989,8 @@ impl InterfaceGenerator<'_> {
                 self.push_type_name(&Type::Id(*resource), dst);
             }
             TypeDefKind::Unknown => unreachable!(),
-            TypeDefKind::Map(_, _) => {todo!("not in old prototype")}
-            TypeDefKind::FixedLengthList(_, _) => {todo!("not in old prototype")}
+            TypeDefKind::Map(_, _) => {todo!()}
+            TypeDefKind::FixedLengthList(_, _) => {todo!()}
         }
     }
 
@@ -1069,7 +1069,7 @@ impl InterfaceGenerator<'_> {
             LiftLower::LowerArgsLiftResults,
             func,
             &mut f,
-            func.kind.is_async(), // TODO async, not supported yet
+            func.kind.is_async(), // TODO async not supported yet
         );
 
         let FunctionBindgen {
@@ -1142,7 +1142,7 @@ impl InterfaceGenerator<'_> {
             LiftLower::LiftArgsLowerResults,
             func,
             &mut f,
-            func.kind.is_async(), // TODO async, not supported yet
+            func.kind.is_async(), // TODO async not supported yet
         );
         let FunctionBindgen { src, .. } = f;
         self.private_top_level_src.push_str(&src);
@@ -1971,7 +1971,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         let args = operands.join(", ");
                         uwriteln!(self.src, "{resource_class_name}({args})");
                     },
-                    FunctionKind::AsyncFreestanding | FunctionKind::AsyncMethod(_) | FunctionKind::AsyncStatic(_) => todo!("not in old prototype")
+                    FunctionKind::AsyncFreestanding | FunctionKind::AsyncMethod(_) | FunctionKind::AsyncStatic(_) => todo!("async")
                 }
                 uwriteln!(self.src, "{destructure}");
             }
@@ -2045,7 +2045,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::ErrorContextLift  |
             Instruction::Malloc { .. }  |
             Instruction::DropHandle { .. }  |
-            Instruction::AsyncTaskReturn { .. }  => todo!("not in old prototype"),
+            Instruction::AsyncTaskReturn { .. }  => todo!("async"),
             Instruction::Flush { amt } => {
                 // TODO not sure this is right, this is from the "other" rebase: https://github.com/Kotlin/wit-bindgen/pull/1/changes/a175db3d9c54c715fa6ccb713b5bdfa901cca21e#diff-099a6665acb2a63446a1f595cc2d6be28c15da4e0c37bfea976ebd52648aeccfR1861-R1863
                 results.extend(operands.iter().take(*amt).cloned());
