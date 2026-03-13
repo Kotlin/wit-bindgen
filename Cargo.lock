@@ -1488,11 +1488,9 @@ dependencies = [
  "anyhow",
  "clap",
  "heck",
- "test-helpers",
  "wasm-metadata 0.245.1",
  "wit-bindgen-core",
  "wit-component",
- "wit-parser",
 ]
 
 [[package]]

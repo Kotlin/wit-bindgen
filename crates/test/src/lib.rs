@@ -18,6 +18,7 @@ mod cpp;
 mod csharp;
 mod custom;
 mod go;
+mod kotlin;
 mod moonbit;
 mod runner;
 mod rust;
@@ -228,6 +229,7 @@ enum Language {
     Csharp,
     MoonBit,
     Go,
+    Kotlin,
     Custom(custom::Language),
 }
 
@@ -449,6 +451,7 @@ impl Runner {
             "cs" => Language::Csharp,
             "mbt" => Language::MoonBit,
             "go" => Language::Go,
+            "kt" => Language::Kotlin,
             other => Language::Custom(custom::Language::lookup(self, other)?),
         };
 
@@ -1296,6 +1299,7 @@ impl Language {
         Language::Csharp,
         Language::MoonBit,
         Language::Go,
+        Language::Kotlin,
     ];
 
     fn obj(&self) -> &dyn LanguageMethods {
@@ -1307,6 +1311,7 @@ impl Language {
             Language::Csharp => &csharp::Csharp,
             Language::MoonBit => &moonbit::MoonBit,
             Language::Go => &go::Go,
+            Language::Kotlin => &kotlin::Kotlin,
             Language::Custom(custom) => custom,
         }
     }
