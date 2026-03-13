@@ -45,39 +45,79 @@ impl OutsideKind {
     }
 }
 
-#[derive(Debug, Clone, Eq)]
-struct ReferencedInterface{
-    kotlin_name: String,
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+struct InterfaceNameInfo {
     /// fully qualified wit interface name, i.e. with package and version
     fq_wit_name: String,
-    id: InterfaceId,
+    kotlin_name: String
 }
 
-impl Hash for ReferencedInterface {
+#[derive(Debug, Clone)]
+struct ReferencedInterface<IdType> {
+    id: IdType,
+    name_info: InterfaceNameInfo,
+}
+
+type ReferencedNonAnonymousInterface = ReferencedInterface<InterfaceId>;
+/// Can also be generating world-level in-place functions, these don't have an interface id
+type ReferencedMaybeAnonymousInterface = ReferencedInterface<Option<InterfaceId>>;
+
+impl Hash for ReferencedMaybeAnonymousInterface {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        if let Some(id) = &self.id {
+            id.hash(state);
+        } else {
+            self.name_info.hash(state);
+        }
+    }
+}
+
+impl PartialEq<Self> for ReferencedMaybeAnonymousInterface {
+    fn eq(&self, other: &Self) -> bool {
+        if let (Some(id), Some(id_other)) = (&self.id, &other.id) {
+            id == id_other
+        } else {
+            self.name_info == other.name_info
+        }
+    }
+}
+
+impl Hash for ReferencedNonAnonymousInterface {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
     }
 }
 
-impl PartialEq<Self> for ReferencedInterface {
+impl PartialEq<Self> for ReferencedNonAnonymousInterface {
     fn eq(&self, other: &Self) -> bool {
-        // TODO to make things easier, could even think about unifying ids in here, not on the upper level. But might be a bit annoying
         self.id == other.id
     }
 }
 
-impl ReferencedInterface{
-    fn create_unified_referenced_interface_name(resolve: &Resolve, world_key: &WorldKey, id: InterfaceId) -> ReferencedInterface {
+impl ReferencedNonAnonymousInterface {
+    fn create_unified_referenced_interface_name(resolve: &Resolve, world_key: &WorldKey, id: InterfaceId) -> Self {
         let kotlin_name = kotlin_interface_name_from_world_key(resolve, &world_key);
         let fq_wit_name = resolve.name_world_key(&world_key);
         let id = unify_interface_id_by_package(resolve, id);
-        ReferencedInterface{ kotlin_name, fq_wit_name, id }
+        ReferencedInterface{ name_info: InterfaceNameInfo { kotlin_name, fq_wit_name }, id }
+    }
+}
+
+impl Eq for ReferencedNonAnonymousInterface {}
+impl Eq for ReferencedMaybeAnonymousInterface {}
+
+impl From<ReferencedNonAnonymousInterface> for ReferencedMaybeAnonymousInterface {
+    fn from(non_anon: ReferencedNonAnonymousInterface) -> Self {
+        ReferencedInterface {
+            id: Some(non_anon.id),
+            name_info: non_anon.name_info,
+        }
     }
 }
 
 #[derive(Default)]
 struct GenerationPlan {
-    interfaces: HashMap<ReferencedInterface, OutsideKind>,
+    interfaces: HashMap<ReferencedNonAnonymousInterface, OutsideKind>,
     // the same in-place function cannot be declared imported and exported at the same time, so just tracking them without being able to retrieve them easily is enough
     in_place_funcs: Vec<(String, Function, OutsideKind)>,
 }
@@ -94,9 +134,10 @@ struct Kotlin {
 
     generation_plan: GenerationPlan,
 
+    // this is only an option to auto-derive default, in reality it will always be filled
     world_id: Option<WorldId>,
     tuple_counts: HashSet<usize>,
-    interface_names: HashMap<InterfaceId, String>,
+    interface_kotlin_names: HashMap<InterfaceId, String>,
     exported_resources: HashSet<TypeId>,
 }
 
@@ -148,7 +189,7 @@ impl WorldGenerator for Kotlin {
     ) -> Result<()> {
         let referenced_interface = ReferencedInterface::create_unified_referenced_interface_name(resolve, name, id);
 
-        self.interface_names.insert(referenced_interface.id, referenced_interface.kotlin_name.clone());
+        self.interface_kotlin_names.insert(referenced_interface.id, referenced_interface.name_info.kotlin_name.clone());
 
         // if it doesn't exist: create it as an import; if it exists: also import it
         self.generation_plan.interfaces.entry(referenced_interface)
@@ -167,7 +208,7 @@ impl WorldGenerator for Kotlin {
     ) -> Result<()> {
         let referenced_interface = ReferencedInterface::create_unified_referenced_interface_name(resolve, name, id);
 
-        self.interface_names.insert(referenced_interface.id, referenced_interface.kotlin_name.clone());
+        self.interface_kotlin_names.insert(referenced_interface.id, referenced_interface.name_info.kotlin_name.clone());
 
         self.generation_plan.interfaces.entry(referenced_interface)
             .and_modify(|kind| *kind = kind.also_export())
@@ -217,11 +258,15 @@ impl WorldGenerator for Kotlin {
     fn import_types(
         &mut self,
         resolve: &Resolve,
-        _world: WorldId,
+        world: WorldId,
         types: &[(&str, TypeId)],
         _files: &mut Files,
     ) {
-        let mut r#gen = self.interface(resolve, OutsideKind::Imported, None);
+        let referenced_interface = ReferencedMaybeAnonymousInterface{
+            id: None,
+            name_info: interface_name_from_world_name(resolve, world)
+        };
+        let mut r#gen = self.interface(resolve, OutsideKind::Imported, referenced_interface);
         for (name, ty) in types {
             r#gen.define_type(name, *ty);
         }
@@ -388,10 +433,35 @@ impl WorldGenerator for Kotlin {
 
 
         // move generation plan out, so that we don't borrow from self twice
-        let generation_plan = std::mem::take(&mut self.generation_plan);
+        let generation_plan = mem::take(&mut self.generation_plan);
 
         for (referenced_interface, outside_kind) in generation_plan.interfaces {
             self.import_export_interface(resolve, referenced_interface, outside_kind);
+        }
+
+        {
+            if generation_plan.in_place_funcs.len() > 0 {
+                unimplemented!("World-level/In-place functions not supported yet")
+            }
+
+            let interface_name_for_world = interface_name_from_world_name(resolve, self.world_id.unwrap());
+            let kotlin_interface_name_for_world = interface_name_for_world.kotlin_name;
+
+
+            // self.src.push_str("@WitInterface(\"TODO(figure out)\")\n");
+            // self.src.push_str(format!("/*external */interface {kotlin_interface_name_for_world} {{\n").as_str());
+
+            // TODO PROBLEM: with our unified approach, what do we do here? Since individual functions can be imported/exported, the whole interface is a mix of the two, doesn't really make sense. Arguably, we could have top level functions like other languages do, but that's also a bit fragile
+            // if outside_kind.is_exported(){
+            //     uwriteln!(self.export_stubs_src, "object {kotlin_name}Impl : {kotlin_name} {{\n{exports_stubs_body}\n}}\n");
+            // }
+
+            /*
+            for (function_name, function, outside_kind) in &generation_plan.in_place_funcs {
+                self.in_place_function(resolve, function_name, function, outside_kind, &kotlin_interface_name_for_world);
+            }
+             */
+
         }
 
         kt_str.push_str(&self.src);
@@ -430,7 +500,7 @@ impl Kotlin {
         &'a mut self,
         resolve: &'a Resolve,
         outside_kind: OutsideKind,
-        namespace_name: Option<String>,
+        referenced_interface: ReferencedMaybeAnonymousInterface
     ) -> InterfaceGenerator<'a> {
         InterfaceGenerator {
             src: Source::default(),
@@ -438,36 +508,33 @@ impl Kotlin {
             export_stubs_src: Source::default(),
             r#gen: self,
             resolve,
-            interface: None,
+            referenced_interface,
             outside_kind,
-            namespace_name
         }
     }
 
-    fn import_export_interface(&mut self, resolve: &Resolve, referenced_interface: ReferencedInterface, outside_kind: OutsideKind){
-        let namespace_name = referenced_interface.kotlin_name;
-
+    fn import_export_interface(&mut self, resolve: &Resolve, referenced_interface: ReferencedNonAnonymousInterface, outside_kind: OutsideKind){
+        let kotlin_name = referenced_interface.name_info.kotlin_name.clone();
         let kotlin_package = self.opts.kotlin_package_name.clone();
 
-        let mut r#gen = self.interface(resolve, outside_kind, Some(namespace_name.clone()));
-        let world_key = WorldKey::Interface(referenced_interface.id);
-        r#gen.interface = Some((referenced_interface.id, &world_key));
+        let referenced_interface_id = referenced_interface.id;
 
+        let mut r#gen = self.interface(resolve, outside_kind, ReferencedMaybeAnonymousInterface::from(referenced_interface));
 
         if outside_kind.is_imported() {
-            r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {kotlin_package}.{namespace_name} {{\n// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Import Code\">\n").as_str());
+            r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {kotlin_package}.{kotlin_name} {{\n// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Import Code\">\n").as_str());
         }
 
 
-        for (_name, func) in resolve.interfaces[referenced_interface.id].functions.iter() {
+        for (_name, func) in resolve.interfaces[referenced_interface_id].functions.iter() {
             // TODO non-freestanding
             if func.kind == FunctionKind::Freestanding {
                 if outside_kind.is_imported() {
-                    r#gen.import(func, Some(&world_key), /* override the interface's methods */ true);
+                    r#gen.import(func, /* override the interface's methods */ true);
                 }
                 if outside_kind.is_exported() {
                     // this doesn't write anything to the actual source anymore
-                    r#gen.export(func, Some(&world_key));
+                    r#gen.export(func);
                 }
             }
         }
@@ -477,14 +544,14 @@ impl Kotlin {
         }
         r#gen.src.push_str("// START OF TYPES\n\n");
 
-        for (name, ty) in &resolve.interfaces[referenced_interface.id].types {
+        for (name, ty) in &resolve.interfaces[referenced_interface_id].types {
             r#gen.define_type(name, *ty);
         }
 
         r#gen.src.push_str("\n// END OF TYPES\n\n");
 
         // write all the functions again as a declaration only, after closing the companion obj
-        for (_name, func) in resolve.interfaces[referenced_interface.id].functions.iter() {
+        for (_name, func) in resolve.interfaces[referenced_interface_id].functions.iter() {
             // TODO non-freestanding
             if func.kind == FunctionKind::Freestanding {
                 let kotlin_sig = r#gen.kotlin_signature(func);
@@ -497,16 +564,16 @@ impl Kotlin {
         let private_top_level_body = &r#gen.private_top_level_src.as_mut_string();
         let exports_stubs_body = &r#gen.export_stubs_src.as_mut_string();
 
-        let wit_iface_name = referenced_interface.fq_wit_name;
+        let wit_iface_name = r#gen.referenced_interface.name_info.fq_wit_name.as_str();
 
         // TODO(Kotlin): Naming of exports
-        uwriteln!(self.src, "@WitInterface(\"{wit_iface_name}\")\n/*external */interface {namespace_name} {{\n{object_body}\n}}\n");
+        uwriteln!(self.src, "@WitInterface(\"{wit_iface_name}\")\n/*external */interface {kotlin_name} {{\n{object_body}\n}}\n");
         if outside_kind.is_exported(){
-            uwriteln!(self.export_stubs_src, "object {namespace_name}Impl : {namespace_name} {{\n{exports_stubs_body}\n}}\n");
+            uwriteln!(self.export_stubs_src, "object {kotlin_name}Impl : {kotlin_name} {{\n{exports_stubs_body}\n}}\n");
         }
 
         // if self.opts.generate_stubs {
-        //     let mut gen = self.interface(resolve, false, Some(namespace_name.to_string()));
+        //     let mut gen = self.interface(resolve, false, Some(name.to_string()));
         //     gen.interface = Some((id, name));
         //     for (_name, func) in resolve.interfaces[id].functions.iter() {
         //         if func.kind == FunctionKind::Freestanding {
@@ -518,24 +585,18 @@ impl Kotlin {
         //
         //     // TODO: Generate in a separate file
         //     let object_body =  &gen.src.as_mut_string();
-        //     uwriteln!(self.export_stubs_src, "object {namespace_name}Impl {{\n{object_body}\n}}\n");
+        //     uwriteln!(self.export_stubs_src, "object {name}Impl {{\n{object_body}\n}}\n");
         // }
 
 
         uwriteln!(self.private_src, "{private_top_level_body}\n");
     }
-}
 
-pub fn interface_namespace_name(resolve: &Resolve, id: &InterfaceId, in_imports: bool) -> String {
-    let name = match &resolve.interfaces[*id].name {
-        None => "AnonymousInterface".to_string(),
-        Some(name) => name.to_upper_camel_case()
-    };
+    fn in_place_function(&mut self, resolve: &Resolve, function_name: &String, function: &Function, outside_kind: &OutsideKind, kotlin_interface_name_for_world: &String){
+        debug_assert!(!(outside_kind.is_exported() && outside_kind.is_imported()), "In place functions can't be both exported and imported");
 
-    if in_imports {
-        name
-    } else {
-        format!("{name}Exports")
+        // TODO see problem in world gen finish()
+        unimplemented!()
     }
 }
 
@@ -546,8 +607,7 @@ struct InterfaceGenerator<'a> {
     outside_kind: OutsideKind,
     r#gen: &'a mut Kotlin,
     resolve: &'a Resolve,
-    interface: Option<(InterfaceId, &'a WorldKey)>,
-    namespace_name: Option<String>,
+    referenced_interface: ReferencedMaybeAnonymousInterface,
 }
 
 impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
@@ -566,7 +626,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         for field in record.fields.iter() {
             self.src.push_str(kdoc(&field.docs).as_str());
             self.src.push_str("var ");
-            self.src.push_str(&to_kotlin_ident(&field.name));
+            self.src.push_str(&to_kotlin_identifier(&field.name));
             self.src.push_str(": ");
             let ty = &field.ty;
             self.src.push_str(self.type_name(ty).as_str());
@@ -583,10 +643,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
         let camel = name.to_upper_camel_case();
 
-        let import_module : String = match self.interface {
-            Some((_, key)) => self.resolve.name_world_key(key),
-            None => unimplemented!("resource imports from worlds"),
-        };
+        let import_module = self.referenced_interface.name_info.fq_wit_name.clone();
 
         assert!(self.outside_kind.is_exported() ^ self.outside_kind.is_imported(), "Exported and imported resources unsupported for now");
 
@@ -656,7 +713,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         if self.outside_kind.is_exported() {
             self.export_stubs_src.push_str(kdoc(docs).as_str());
 
-            let namespace_name = self.namespace_name.clone().unwrap();
+            let kotlin_name = self.referenced_interface.name_info.kotlin_name.as_str();
 
             let mut has_constructor: bool = false;
             for f in &functions {
@@ -668,19 +725,17 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             // If exported resource doesn't have a constructor, call the primary super constructor
             let maybe_super_constructor_call = if has_constructor { "" } else { "()" };
 
-            uwriteln!(self.export_stubs_src, "class {camel}Impl : {namespace_name}.{camel}{maybe_super_constructor_call} {{");
+            uwriteln!(self.export_stubs_src, "class {camel}Impl : {kotlin_name}.{camel}{maybe_super_constructor_call} {{");
         }
 
-
-        let interface_name = self.interface.map(|(_, k)| k);
 
         for f in &functions {
             match f.kind {
                 FunctionKind::Method(id) | FunctionKind::Constructor(id) if id == type_id => {
                     if self.outside_kind.is_imported() {
-                        self.import(f, interface_name, /* in resources: dont override */ false);
+                        self.import(f, /* in resources: dont override */ false);
                     } else {
-                        self.export(f, interface_name);
+                        self.export(f);
                     }
                 }
                 _ => {}
@@ -698,9 +753,9 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             match f.kind {
                 FunctionKind::Static(id) if id == type_id => {
                     if self.outside_kind.is_imported() {
-                        self.import(f, interface_name, /* in resources: dont override */ false);
+                        self.import(f, /* in resources: dont override */ false);
                     } else {
-                        self.export(f, interface_name);
+                        self.export(f);
                     }
                 }
                 _ => {}
@@ -825,11 +880,11 @@ impl InterfaceGenerator<'_> {
 
         match &ty.owner {
             TypeOwner::Interface(ty_interface_id) => {
-                let namespace_name = &self.r#gen.interface_names[ty_interface_id];
+                let kotlin_name = &self.r#gen.interface_kotlin_names[ty_interface_id];
                 if is_exported {
-                    uwrite!(result, "{namespace_name}Impl");
+                    uwrite!(result, "{kotlin_name}Impl");
                 } else {
-                    uwrite!(result, "{namespace_name}");
+                    uwrite!(result, "{kotlin_name}");
                 }
             }
             TypeOwner::World(_) => {
@@ -898,11 +953,11 @@ impl InterfaceGenerator<'_> {
                 let is_exported_resource = self.r#gen.exported_resources.contains(id);
                 match &ty.owner {
                     TypeOwner::Interface(ty_interface_id) => {
-                        let namespace_name = &self.r#gen.interface_names[ty_interface_id];
+                        let kotlin_name = &self.r#gen.interface_kotlin_names[ty_interface_id];
                         if is_exported_resource {
-                            uwrite!(dst, "{namespace_name}Impl.");  // Exported resources live only in Implementation namespace
+                            uwrite!(dst, "{kotlin_name}Impl.");  // Exported resources live only in Implementation namespace
                         } else {
-                            uwrite!(dst, "{namespace_name}.");
+                            uwrite!(dst, "{kotlin_name}.");
                         }
                     }
                     TypeOwner::World(_) => {
@@ -995,20 +1050,18 @@ impl InterfaceGenerator<'_> {
     }
 
     fn kotlin_fun_name(&self, func: &Function) -> String {
-        to_kotlin_ident(func.item_name())
+        to_kotlin_identifier(func.item_name())
     }
 
-    fn import(&mut self, func: &Function, interface_name: Option<&WorldKey>, annotate_methods_as_override:bool) {
+    // NOTE: import/export can be called on functions, that don't themselves belong to an interface
+    fn import(&mut self, func: &Function, annotate_methods_as_override:bool) {
         let sig = self.resolve.wasm_signature(AbiVariant::GuestImport, func);
         self.private_top_level_src.push_str("\n");
 
         uwriteln!(
             self.private_top_level_src,
             "@WasmImport(\"{}\", \"{}\")",
-            match interface_name {
-                Some(name) => self.resolve.name_world_key(name),
-                None => "\\$root".to_string(),  // TODO(Kotlin): Escape all strings properly
-            },
+            self.referenced_interface.name_info.fq_wit_name,
             func.name
         );
         let name = self.kotlin_fun_name(func);
@@ -1057,7 +1110,7 @@ impl InterfaceGenerator<'_> {
             let param = if idx == 0 && matches!(func.kind, FunctionKind::Method(_)) {
                 "this".to_string()
             } else {
-                to_kotlin_ident(&*param.name)
+                to_kotlin_identifier(&*param.name)
             };
             f.locals.insert(&param).unwrap();
             f.params.push(param.clone());
@@ -1087,11 +1140,12 @@ impl InterfaceGenerator<'_> {
         }
     }
 
-    fn export(&mut self, func: &Function, interface_name: Option<&WorldKey>) {
+    fn export(&mut self, func: &Function) {
         let wasm_sig = self.resolve.wasm_signature(AbiVariant::GuestExport, func);
 
-        let core_module_name = interface_name.map(|s| self.resolve.name_world_key(s));
-        let export_name = func.core_export_name(core_module_name.as_deref(), /* TODO check what's right here */ Mangling::Legacy);
+        let core_module_name = self.referenced_interface.name_info.fq_wit_name.as_str();
+        // TODO once it works, migrate to new mangling
+        let export_name = func.core_export_name(Some(core_module_name), Mangling::Legacy);
         {
             let kotlin_sig = self.kotlin_signature(func);
             if !matches!(func.kind, FunctionKind::Constructor(_)) {  // Constructor in exported abstract resource class is not needed
@@ -1169,7 +1223,7 @@ impl InterfaceGenerator<'_> {
             } else {
                 if i > 0 { result.push_str(", "); }
             }
-            result.push_str(&to_kotlin_ident(&*param.name));
+            result.push_str(&to_kotlin_identifier(&*param.name));
             result.push_str(": ");
             result.push_str(self.type_name(&param.ty).as_str());
         }
@@ -1352,7 +1406,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::RecordLower { record, .. } => {
                 let op = &operands[0];
                 for f in record.fields.iter() {
-                    results.push(format!("{op}.{}", to_kotlin_ident(&f.name)));
+                    results.push(format!("{op}.{}", to_kotlin_identifier(&f.name)));
                 }
             }
 
@@ -1944,17 +1998,14 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                      */
                 };
 
-                let call_namespace = match &self.r#gen.namespace_name {
-                    None => String::new(),
-                    Some(name) => format!("{name}Impl.")
-                };
+                let called_interface_kotlin_name = format!("{}Impl", &self.r#gen.referenced_interface.name_info.kotlin_name);;
                 let name = self.r#gen.kotlin_fun_name(func);
 
                 uwrite!(self.src, "{assignment}");
                 match func.kind {
                     FunctionKind::Freestanding => {
                         let args = operands.join(", ");
-                        uwriteln!(self.src, "{call_namespace}{name}({args})");
+                        uwriteln!(self.src, "{called_interface_kotlin_name}.{name}({args})");
                     }
                     FunctionKind::Method(_) => {
                         let receiver_arg = operands[0].clone();
@@ -2136,7 +2187,7 @@ pub fn is_option_type(resolve: &Resolve, ty: &Type) -> bool {
     }
 }
 
-pub fn to_kotlin_ident(name: &str) -> String {
+pub fn to_kotlin_identifier(name: &str) -> String {
     match name {
         // Escape Kotlin keywords
         // Source: https://kotlinlang.org/docs/keyword-reference.html#hard-keywords
@@ -2168,6 +2219,21 @@ fn kotlin_interface_name_from_world_key(resolve: &Resolve, key: &WorldKey) -> St
 
 fn fully_qualified_wit_interface_name_from_world_key(resolve: &Resolve, key: &WorldKey) -> String {
     resolve.name_world_key(key)
+}
+
+fn interface_name_info_from_world_key(resolve: &Resolve, key: &WorldKey) -> InterfaceNameInfo {
+    let kotlin_name = kotlin_interface_name_from_world_key(resolve, key);
+    let fq_wit_name = fully_qualified_wit_interface_name_from_world_key(resolve, key);
+    InterfaceNameInfo { kotlin_name, fq_wit_name }
+}
+
+/// for types or functions declared directly inside a world, we still need an interface name, to export them to an appropriate kotlin interface
+fn interface_name_from_world_name(resolve: &Resolve, world: WorldId) -> InterfaceNameInfo {
+    let world_name = resolve.worlds[world].name.as_str();
+    // TODO decide on a (shorter) name, probably simply one of world-level/in-place
+    let iface_name = format!("{}-world-level-in-place-functions", world_name);
+    // TODO not sure if the fqwit name really makes sense here, lets see
+    InterfaceNameInfo { kotlin_name: iface_name.to_upper_camel_case(), fq_wit_name: iface_name }
 }
 
 /// resolve.interfaces contains every interface once per import/export.

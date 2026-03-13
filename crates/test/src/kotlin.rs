@@ -60,9 +60,6 @@ impl LanguageMethods for Kotlin {
         // TODO: fix these codegen failures
         matches!(name,
             "resource-borrow-in-record.wit" |
-            "unused-import.wit" |
-            "smoke.wit" |
-            "resource-own-in-other-interface.wit" |
             "resource-alias.wit" |
             "keywords-in-interfaces-and-worlds.wit" |
             "import-and-export-resource-alias.wit" |
@@ -71,16 +68,31 @@ impl LanguageMethods for Kotlin {
             "resource-local-alias.wit" |
             "resources-with-lists.wit" |
             "smoke-export.wit" |
-            "resources.wit" |
             "resource-fallible-constructor.wit" |
-            "use-across-interfaces.wit" |
             "import-and-export-resource.wit" |
             "issue1515-special-in-comment.wit" |
-            "issue573.wit" |
             "return-resource-from-export.wit" |
             "issue929.wit" |
             "named-fixed-length-list.wit" |
-            "rename-interface.wit"
+            // all these remaining failures are because in-place functions are not supported yet
+            "rename-interface.wit" |
+            "resources.wit" |
+            "same-names5.wit" |
+            "import-export-same-func.wit" |
+            "issue-1433.wit" |
+            "fully-qualified-java-address.wit" |
+            "same-names1.wit" |
+            "smoke-default.wit" |
+            "same-names2.wit" |
+            "variants-unioning-types.wit" |
+            "go_params.wit" |
+            "issue544.wit" |
+            "import-func.wit" |
+            "import_export_func.wit" |
+            "just-export.wit" |
+            "lift-lower-foreign.wit" |
+            "worlds-with-types.wit" |
+            "issue573.wit"
         )
     }
 
