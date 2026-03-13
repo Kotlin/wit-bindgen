@@ -42,42 +42,46 @@ impl LanguageMethods for Kotlin {
         config: &crate::config::WitConfig,
         _args: &[String],
     ) -> bool {
-        config.error_context
-            // TODO: fix these codegen failures, and organize them better (e.g. add as a failure condition config.async_ here, once we have real verification)
-            || matches!(
-                name,
-                "future-same-type-different-names.wit"
-                    | "futures.wit"
-                    | "import-and-export-resource-alias.wit"
-                    | "import-and-export-resource.wit"
-                    | "import-export-future.wit"
-                    | "import-export-stream.wit"
-                    | "issue-1432.wit"
-                    | "issue-1544.wit"
-                    | "issue1515-special-in-comment.wit"
-                    | "issue573.wit"
-                    | "issue929-only-methods.wit"
-                    | "issue929.wit"
-                    | "keywords-in-interfaces-and-worlds.wit"
-                    | "named-fixed-length-list.wit"
-                    | "rename-interface.wit"
-                    | "resource-alias.wit"
-                    | "resource-borrow-in-record.wit"
-                    | "resource-fallible-constructor.wit"
-                    | "resource-local-alias.wit"
-                    | "resource-own-in-other-interface.wit"
-                    | "resources-in-aggregates.wit"
-                    | "resources-with-futures.wit"
-                    | "resources-with-lists.wit"
-                    | "resources-with-streams.wit"
-                    | "resources.wit"
-                    | "return-resource-from-export.wit"
-                    | "smoke-export.wit"
-                    | "smoke.wit"
-                    | "streams.wit"
-                    | "unused-import.wit"
-                    | "use-across-interfaces.wit"
+        if config.error_context {
+            return true
+        }
+
+        if config.async_
+            // Except these actually do work:
+            && !matches!(name,
+                "async-trait-function.wit" |
+                "async-resource-func.wit" |
+                "issue-1433.wit"
             )
+        {
+            return true;
+        }
+
+        // TODO: fix these codegen failures
+        matches!(name,
+            "resource-borrow-in-record.wit" |
+            "unused-import.wit" |
+            "smoke.wit" |
+            "resource-own-in-other-interface.wit" |
+            "resource-alias.wit" |
+            "keywords-in-interfaces-and-worlds.wit" |
+            "import-and-export-resource-alias.wit" |
+            "resources-in-aggregates.wit" |
+            "issue929-only-methods.wit" |
+            "resource-local-alias.wit" |
+            "resources-with-lists.wit" |
+            "smoke-export.wit" |
+            "resources.wit" |
+            "resource-fallible-constructor.wit" |
+            "use-across-interfaces.wit" |
+            "import-and-export-resource.wit" |
+            "issue1515-special-in-comment.wit" |
+            "issue573.wit" |
+            "return-resource-from-export.wit" |
+            "issue929.wit" |
+            "named-fixed-length-list.wit" |
+            "rename-interface.wit"
+        )
     }
 
     fn verify(&self, runner: &Runner, verify: &Verify) -> Result<()> {
