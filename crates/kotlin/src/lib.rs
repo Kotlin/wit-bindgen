@@ -455,7 +455,7 @@ impl Kotlin {
 
 
         if outside_kind.is_imported() {
-            r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {kotlin_package}.{namespace_name} {{ // <editor-fold defaultstate=\"collapsed\" desc=\"Generated Import Code\">\n").as_str());
+            r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {kotlin_package}.{namespace_name} {{\n// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Import Code\">\n").as_str());
         }
 
 
