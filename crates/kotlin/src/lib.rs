@@ -309,6 +309,7 @@ impl WorldGenerator for Kotlin {
         }
 
         if !generation_plan.in_place_funcs.is_empty() {
+            // TODO PROBLEM: with our unified approach, what do we do here? Since individual functions can be imported/exported, the whole interface is a mix of the two, doesn't really make sense. Arguably, we could have top level functions like other languages do, but that's also a bit fragile
             uwriteln!(self.src, "@WitInterface(TODO)\nexternal interface {} {{", self.opts.in_place_interface_name);
             for (fn_name, func, outside_kind) in &generation_plan.in_place_funcs {
                 let (src_fragment, export_stubs_src_fragment) = {
