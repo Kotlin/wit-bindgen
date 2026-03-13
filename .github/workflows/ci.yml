@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [kotlin]
+  pull_request:
+    branches: [kotlin]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - run: cargo build
+
+  notify-downstream:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          repository: Kotlin/hyperlight-wasm-http-example
+          event-type: upstream-changed
+          client-payload: '{"repo": "${{ github.repository }}", "sha": "${{ github.sha }}"}'
