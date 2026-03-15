@@ -394,6 +394,18 @@ impl WorldGenerator for Kotlin {
             self.import_export_interface(resolve, referenced_interface, outside_kind);
         }
 
+        // Process world-level (non-interface) functions
+        for (_name, func, outside_kind) in &generation_plan.in_place_funcs {
+            let mut r#gen = self.interface(resolve, *outside_kind, None);
+            if outside_kind.is_exported() {
+                r#gen.export(&func, None);
+            } else {
+                r#gen.import(&func, None, false);
+            }
+            let private_top_level_body = r#gen.private_top_level_src.as_mut_string().clone();
+            self.private_src.push_str(&private_top_level_body);
+        }
+
         kt_str.push_str(&self.src);
 
         // TODO(Kotlin): Add custom section
