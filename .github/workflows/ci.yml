@@ -25,7 +25,7 @@ jobs:
         run: cargo build
 
       - name: Install test dependencies
-        run: cargo install --locked wasmtime
+        run: curl https://wasmtime.dev/install.sh -sSf | bash
 
       - name: Codegen Tests
         run: cargo run test --languages kotlin --artifacts target/artifacts tests/codegen
