@@ -24,6 +24,9 @@ jobs:
       - name: Build
         run: cargo build
 
+      - name: Install test dependencies
+        run: cargo install --locked wasmtime
+
       - name: Codegen Tests
         run: cargo run test --languages kotlin --artifacts target/artifacts tests/codegen
 
