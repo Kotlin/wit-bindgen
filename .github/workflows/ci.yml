@@ -25,11 +25,7 @@ jobs:
         run: cargo build
 
       - name: Codegen Tests
-        run: cargo run test \
-          --languages kotlin \
-          --artifacts target/artifacts \
-          --rust-wit-bindgen-path ./crates/guest-rust \
-          tests/codegen
+        run: cargo run test --languages kotlin --artifacts target/artifacts tests/codegen
 
 
   notify-downstream:
