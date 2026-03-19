@@ -139,6 +139,10 @@ struct Kotlin {
     tuple_counts: HashSet<usize>,
     interface_kotlin_names: HashMap<InterfaceId, String>,
     exported_resources: HashSet<TypeId>,
+    // type names that might conflict with wit types, so need their fully qualified name (kotlin.<typename>) to resolve correctly
+    // TODO this doesn't actually work, because not everything that needs to be handled here is even a wit type:
+    //      variant cases for example...
+    kotlin_type_names_that_need_fqn: IndexMap<TypeId, String>,
 }
 
 #[derive(Default)]
@@ -178,6 +182,63 @@ impl WorldGenerator for Kotlin {
         self.world = name.to_string();
         self.sizes.fill(resolve);
         self.world_id = Some(world);
+
+        // find if any type names conflict with kotlin types, if so, we might need to use the fqn (kotlin.<typename>) for the kotlin types, so be conservative and use the fqn everywhere, if we see one conflict for it anywhere.
+        // some of these are also defined by us in ComponentSupport.kt, so their fqn would start with the self., not kotlin.
+        for (id, ty) in &resolve.types {
+            let Some(type_itself_name) = &ty.name
+                else {continue};
+
+            let mut check_conflict_add_mitigation = |name: &str| {
+                // see push_type_name/push_type_id_name
+                let fqn_package_prefix:String = match name {
+                    // wit primitives
+                    "String" | "UByte" | "Byte" | "UShort" | "Short" | "UInt" | "Int" | "ULong" | "Long" | "Float" | "Double" | "Boolean"
+                    // not primitives, but still kotlin package types
+                    | "Unit"
+                    | "List"
+                    | "Pair"
+                    | "Triple"
+                    | "Result" => "kotlin".to_string(),
+                    // from kotlin.wasm.unsafe
+                    "Pointer" => "kotlin.wasm.unsafe".to_string(),
+                    // from ComponentSupport.kt
+                    "Tuple"
+                    | "Option"  => self.opts.kotlin_package_name.clone(),
+                    _ => {return}
+                };
+
+                self.kotlin_type_names_that_need_fqn.insert(id, fqn_package_prefix);
+            };
+
+            check_conflict_add_mitigation(type_itself_name.to_upper_camel_case().as_str());
+
+            // also try extracting "sub"-names, e.g. variant case names etc.
+            match &ty.kind {
+                TypeDefKind::Record(r) => r.fields.iter().for_each(|x| check_conflict_add_mitigation(x.name.to_upper_camel_case().as_str())),
+                TypeDefKind::Flags(f) => f.flags.iter().for_each(|x| check_conflict_add_mitigation(x.name.to_upper_camel_case().as_str())),
+                TypeDefKind::Variant(v) => v.cases.iter().for_each(|x| check_conflict_add_mitigation(x.name.to_upper_camel_case().as_str())),
+                TypeDefKind::Enum(e) => e.cases.iter().for_each(|x| check_conflict_add_mitigation(x.name.to_upper_camel_case().as_str())),
+                // we dont need to be recursive here, as we should iterate over all the types anyway, so first level is enough. So the type name itself is enough for an alias
+                TypeDefKind::Type(_) |
+                // TODO think about resources again, probably their types get visited anyway
+                TypeDefKind::Resource |
+                // the rest of these are not types that define names
+                TypeDefKind::Option(_) |
+                TypeDefKind::Result(_) |
+                TypeDefKind::Tuple(_) |
+                TypeDefKind::List(_) |
+                TypeDefKind::Handle(_) |
+                TypeDefKind::Unknown => {continue}
+                TypeDefKind::Map(_, _) |
+                TypeDefKind::FixedLengthList(_, _) |
+                TypeDefKind::Future(_) |
+                TypeDefKind::Stream(_) => unimplemented!()
+            };
+        }
+        for (id, prefix) in &self.kotlin_type_names_that_need_fqn {
+            println!("resolving type name conflict: {:?} with fqn: {}", resolve.types[*id].name, prefix);
+        }
     }
 
     fn import_interface(
@@ -943,6 +1004,11 @@ impl InterfaceGenerator<'_> {
 
     fn push_type_id_name(&self, id: &TypeId, dst: &mut String) {
         let ty = &self.resolve.types[*id];
+        if let Some(necessary_package_prefix) = self.r#gen.kotlin_type_names_that_need_fqn.get(id){
+            // if there is a prefix registered in that map, we need to prepend it to the name, so that the reference is resolved to the right type
+            dst.push_str(necessary_package_prefix);
+            dst.push_str(".");
+        }
         match &ty.kind {
             TypeDefKind::Type(t) => self.push_type_name(t, dst),
             TypeDefKind::Record(_)
