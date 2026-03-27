@@ -59,40 +59,18 @@ impl LanguageMethods for Kotlin {
 
         // TODO: fix these codegen failures
         matches!(name,
-            "resource-borrow-in-record.wit" |
             "resource-alias.wit" |
-            "keywords-in-interfaces-and-worlds.wit" |
             "import-and-export-resource-alias.wit" |
             "resources-in-aggregates.wit" |
             "issue929-only-methods.wit" |
             "resource-local-alias.wit" |
             "resources-with-lists.wit" |
-            "smoke-export.wit" |
             "resource-fallible-constructor.wit" |
             "import-and-export-resource.wit" |
             "issue1515-special-in-comment.wit" |
-            "return-resource-from-export.wit" |
             "issue929.wit" |
             "named-fixed-length-list.wit" |
-            // all these remaining failures are because in-place functions are not supported yet
-            "rename-interface.wit" |
-            "resources.wit" |
-            "same-names5.wit" |
-            "import-export-same-func.wit" |
-            "issue-1433.wit" |
-            "fully-qualified-java-address.wit" |
-            "same-names1.wit" |
-            "smoke-default.wit" |
-            "same-names2.wit" |
-            "variants-unioning-types.wit" |
-            "go_params.wit" |
-            "issue544.wit" |
-            "import-func.wit" |
-            "import_export_func.wit" |
-            "just-export.wit" |
-            "lift-lower-foreign.wit" |
-            "worlds-with-types.wit" |
-            "issue573.wit"
+            "issue-1433.wit"
         )
     }
 
