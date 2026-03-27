@@ -2276,7 +2276,7 @@ pub fn to_kotlin_identifier(name: &str) -> String {
 /// This differs from resolve.name_world_key(key) in that that one returns the wit kotlin_name of the interface, whereas we need the kotlin kotlin_name
 fn kotlin_interface_name_from_world_key(resolve: &Resolve, key: &WorldKey) -> String {
     match key {
-        WorldKey::Name(n) => n.to_string(),
+        WorldKey::Name(n) => n.to_string().to_upper_camel_case(),
         WorldKey::Interface(inner_id) => {
             // TODO is there any case where this unwrap can fail?
             resolve.interfaces[*inner_id].name.clone().unwrap().to_upper_camel_case()
