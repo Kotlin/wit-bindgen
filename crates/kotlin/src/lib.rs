@@ -1198,7 +1198,10 @@ impl InterfaceGenerator<'_> {
         } = f;
 
         self.src.push_str(&String::from(src));
-        self.src.push_str("}\n");
+        // because the withScopedMemoryAllocator opening line doesn't perfectly end with '{',
+        // the auto-indentation doesn't work on that. So also make the closing '}' not perfect,
+        // so that the indents don't get messed up globally, only locally.
+        self.src.push_str("/* free memory allocator */}\n");
         self.src.push_str("// </editor-fold>\n");
         self.src.push_str("}\n");
         if let FunctionKind::Constructor(_) = func.kind {
