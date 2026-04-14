@@ -66,7 +66,7 @@ impl Source {
             }
 
             if !self.in_line_comment {
-                if trimmed.starts_with('}') && self.s.ends_with("  ") {
+                if trimmed.starts_with(&['}', ')']) && self.s.ends_with("  ") {
                     self.s.pop();
                     self.s.pop();
                 }
@@ -77,10 +77,10 @@ impl Source {
                 line.trim_start()
             });
             if !self.in_line_comment {
-                if trimmed.ends_with('{') {
+                if trimmed.ends_with(&['{', '(']) {
                     self.indent += 1;
                 }
-                if trimmed.starts_with('}') {
+                if trimmed.starts_with(&['}', ')']) {
                     // Note that a `saturating_sub` is used here to prevent a panic
                     // here in the case of invalid code being generated in debug
                     // mode. It's typically easier to debug those issues through
@@ -207,6 +207,17 @@ mod tests {
         s.push_str("z\n");
         s.push_str("}\n");
         assert_eq!(s.s, "if() {\n  y\n} else if () {\n  z\n}\n");
+    }
+
+    #[test]
+    fn parenthesis_indent() {
+        let mut s = Source::default();
+        s.push_str("if (\n");
+        s.push_str("y\n");
+        s.push_str(") {\n");
+        s.push_str("z\n");
+        s.push_str("}\n");
+        assert_eq!(s.s, "if (\n  y\n) {\n  z\n}\n");
     }
 
     #[test]
