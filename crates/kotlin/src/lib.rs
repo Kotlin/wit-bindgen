@@ -540,7 +540,8 @@ impl WorldGenerator for Kotlin {
 
         }
 
-        kt_str.push_str(&self.src);
+        // just push to the string itself, because we don't want re-indenting of what's in src
+        kt_str.as_mut_string().push_str(&self.src);
 
         // TODO(Kotlin): Add custom section
         files.push(&format!("{snake}.kt"), kt_str.as_bytes());
@@ -597,6 +598,9 @@ impl Kotlin {
 
         let mut r#gen = self.interface(resolve, outside_kind, ReferencedMaybeAnonymousInterface::from(referenced_interface));
 
+        // because this will be inside an interface, add one level of indentation
+        r#gen.src.indent(1);
+
         if outside_kind.is_imported() {
             r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {kotlin_package}.{kotlin_name} {{\n// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Import Code\">\n").as_str());
         }
@@ -636,6 +640,9 @@ impl Kotlin {
             }
         }
 
+        // remove the extra level of indentation
+        r#gen.src.deindent(1);
+
         let object_body =  &r#gen.src.as_mut_string();
         let private_top_level_body = &r#gen.private_top_level_src.as_mut_string();
         let exports_stubs_body = &r#gen.export_stubs_src.as_mut_string();
@@ -643,7 +650,8 @@ impl Kotlin {
         let wit_iface_name = r#gen.referenced_interface.name_info.fq_wit_name.as_str();
 
         // TODO(Kotlin): Naming of exports
-        uwriteln!(self.src, "@WitInterface(\"{wit_iface_name}\")\n/*external */interface {kotlin_name} {{\n{object_body}\n}}\n");
+        // write to the raw string to avoid reindenting
+        uwriteln!(self.src.as_mut_string(), "@WitInterface(\"{wit_iface_name}\")\n/*external */interface {kotlin_name} {{\n{object_body}\n}}\n");
         if outside_kind.is_exported(){
             uwriteln!(self.export_stubs_src, "object {kotlin_name}Impl : {kotlin_name} {{\n{exports_stubs_body}\n}}\n");
         }
@@ -1168,9 +1176,11 @@ impl InterfaceGenerator<'_> {
             self.src.push_str(": this(ResourceHandle(run(fun (): Int");
         }
         self.src.push_str(" {\n");
-        self.src.push_str("// <editor-fold defaultstate=\"collapsed\" desc=\"Generated ABI Adaption Code\">\n");
+        self.src.push_str("// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Canonical ABI Adapter Code\">\n");
 
-        self.src.push_str(" withScopedMemoryAllocator { allocator -> \n");
+        self.src.push_str("withScopedMemoryAllocator { allocator ->\n");
+        // because the line doesn't perfectly end with a {, need to manually increase the indent
+        self.src.indent(1);
 
         let mut f = FunctionBindgen::new(self, &import_name, func.kind.clone());
         for (idx, param) in func.params.iter().enumerate() {
@@ -1256,7 +1266,9 @@ impl InterfaceGenerator<'_> {
         }
         s.push_str(" {\n");
         s.push_str("freeAllComponentModelReallocAllocatedMemory()\n");
-        s.push_str(" withScopedMemoryAllocator { allocator -> \n");
+        s.push_str("withScopedMemoryAllocator { allocator ->\n");
+        // because the line doesn't perfectly end with a {, need to manually increase the indent
+        s.indent(1);
 
 
         // Perform all lifting/lowering and append it to our src.
