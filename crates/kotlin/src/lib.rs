@@ -698,8 +698,8 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         self.src.push_str("data class ");
         let name = name.to_upper_camel_case();
         self.src.push_str(&name);
-        // TODO(Kotlin): ident doesn't work
         self.src.push_str("(\n");
+        self.src.indent(1);
         for field in record.fields.iter() {
             self.src.push_str(kdoc(&field.docs).as_str());
             self.src.push_str("var ");
@@ -709,6 +709,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             self.src.push_str(self.type_name(ty).as_str());
             self.src.push_str(",\n");
         }
+        self.src.deindent(1);
         self.src.push_str(")\n");
     }
 
