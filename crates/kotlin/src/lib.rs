@@ -234,7 +234,13 @@ impl WorldGenerator for Kotlin {
         _files: &mut Files,
     ) {
         for (name, func) in funcs {
-            self.generation_plan.in_place_funcs.push((name.to_string(), (*func).clone(), OutsideKind::Imported));
+            debug_assert!(func.kind != FunctionKind::AsyncFreestanding);
+
+            // only add in place funcs if they're freestanding, otherwise they are part of a resource
+
+            if func.kind == FunctionKind::Freestanding {
+                self.generation_plan.in_place_funcs.push((name.to_string(), (*func).clone(), OutsideKind::Imported));
+            }
         }
     }
 
@@ -246,7 +252,13 @@ impl WorldGenerator for Kotlin {
         _files: &mut Files,
     ) -> Result<()> {
         for (name, func) in funcs {
-            self.generation_plan.in_place_funcs.push((name.to_string(), (*func).clone(), OutsideKind::Exported));
+            debug_assert!(func.kind != FunctionKind::AsyncFreestanding);
+
+            // see import_funcs for explanation
+
+            if func.kind == FunctionKind::Freestanding {
+                self.generation_plan.in_place_funcs.push((name.to_string(), (*func).clone(), OutsideKind::Exported));
+            }
         }
         // if generate_stubs {
         //     uwriteln!(self.src, "object {interface_name}Impl {{");
