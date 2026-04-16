@@ -279,7 +279,8 @@ impl WorldGenerator for Kotlin {
         for (name, ty) in types {
             r#gen.define_type(name, *ty);
         }
-        r#gen.r#gen.src.push_str(&r#gen.src);
+        // push to raw string, instead of to source, to avoid reindenting
+        r#gen.r#gen.src.as_mut_string().push_str(&r#gen.src);
     }
 
     fn finish(&mut self, resolve: &Resolve, id: WorldId, files: &mut Files) -> Result<()> {
@@ -482,6 +483,10 @@ impl WorldGenerator for Kotlin {
                 // TODO figure out kotlin names, might just be Imports
                 let mut r#gen_imports = self.interface(resolve, OutsideKind::Imported, ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo { fq_wit_name: "TODO-figure-out".to_string(), kotlin_name: format!("{kotlin_interface_name_for_world}.Imports") }));
 
+                // because we're inside an outer interface, increase indent manually
+                r#gen_imports.src.indent(1);
+                r#gen_imports.src.push_str("@WitImport\ncompanion object Import : Imports {\n");
+
                 while let Some((_, function, kind)) = iterator.peek() && kind.is_imported() {
                     // only peek, so that the following loop can consume the same function again, if it's an export
                     iterator.next();
@@ -494,22 +499,26 @@ impl WorldGenerator for Kotlin {
                     declarations_buf.push_str("\n");
                 }
                 if any_world_level_function_imports {
-                    let mut import_buf = String::new();
-                    import_buf.push_str("@WitImport\ncompanion object Import : Imports {\n");
-                    import_buf.push_str(r#gen_imports.src.as_str());
-                    import_buf.push_str("}\n\ninterface Imports{\n");
-                    import_buf.push_str(declarations_buf.as_str());
-                    import_buf.push_str("}\n\n");
+                    r#gen_imports.src.push_str("}\n\ninterface Imports{\n");
+                    r#gen_imports.src.push_str(declarations_buf.as_str());
+                    r#gen_imports.src.push_str("}\n\n");
+
+                    let src = r#gen_imports.src.as_str();
                     let private_src = r#gen_imports.private_top_level_src.as_str();
-                    self.src.push_str(import_buf.as_str());
-                    self.private_src.push_str(private_src);
+
+                    self.src.as_mut_string().push_str(src);
+                    self.private_src.as_mut_string().push_str(private_src);
                 }
             }
             {
                 let mut declarations_buf = String::new();
 
-                // TODO can't use the .Exports as the name, because we can't re-open the interface to declare the object as part of it later
+                // TODO can't use the .Exports suffix as the name, because we can't re-open the interface to declare the object as part of it later
                 let mut r#gen_exports = self.interface(resolve, OutsideKind::Exported, ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo{fq_wit_name: "TODO-figure-out".to_string(), kotlin_name: format!("{kotlin_interface_name_for_world}Exports") }));
+
+                // because we're inside an outer interface, increase indent manually
+                r#gen_exports.src.indent(1);
+
                 while let Some((_, function, kind)) = iterator.next() && kind.is_exported() {
                     r#gen_exports.export(function);
                     // at the same time, collect the signatures to append them to the interface definition later
@@ -523,16 +532,18 @@ impl WorldGenerator for Kotlin {
                     // this shouldn't write anything to source itself
                     debug_assert!(r#gen_exports.src.len() == 0);
 
-                    let mut export_buf = String::new();
-                    export_buf.push_str("interface Exports{\n");
-                    export_buf.push_str(declarations_buf.as_str());
-                    export_buf.push_str("}\n\n");
+                    r#gen_exports.src.push_str("interface Exports{\n");
+                    r#gen_exports.src.push_str(declarations_buf.as_str());
+                    r#gen_exports.src.push_str("}\n\n");
+
+                    let src = r#gen_exports.src.as_str();
                     let private_src = r#gen_exports.private_top_level_src.as_str();
                     let export_stubs_src = r#gen_exports.export_stubs_src.as_str();
-                    self.src.push_str(export_buf.as_str());
-                    self.private_src.push_str(private_src);
-                    self.export_stubs_src.push_str(export_stubs_src);
-                    // TODO write to export stubs
+
+                    self.src.as_mut_string().push_str(src);
+                    self.private_src.as_mut_string().push_str(private_src);
+                    self.export_stubs_src.as_mut_string().push_str(export_stubs_src);
+                    // TODO check export stubs for this case
                 }
 
                 self.src.push_str("}\n");
@@ -1210,10 +1221,8 @@ impl InterfaceGenerator<'_> {
         } = f;
 
         self.src.push_str(&String::from(src));
-        // because the withScopedMemoryAllocator opening line doesn't perfectly end with '{',
-        // the auto-indentation doesn't work on that. So also make the closing '}' not perfect,
-        // so that the indents don't get messed up globally, only locally.
-        self.src.push_str("/* free memory allocator */}\n");
+        // no need to manually deindent, because the line ends with a }
+        self.src.push_str("}\n");
         self.src.push_str("// </editor-fold>\n");
         self.src.push_str("}\n");
         if let FunctionKind::Constructor(_) = func.kind {
