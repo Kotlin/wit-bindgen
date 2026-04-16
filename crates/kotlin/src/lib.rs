@@ -765,7 +765,8 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         }
 
         // TODO: Zero out the handle
-        uwriteln!(self.src, "override fun close() {{ {imported_function_prefix}_drop(__handle.value) }} ");
+        // NOTE: cannot use uwriteln! here, because the way it splits up the arguments messes up indentation (one split ends with '{')
+        self.src.push_str(format!("override fun close() {{ {imported_function_prefix}_drop(__handle.value) }}\n").as_str());
 
         let ty = &self.resolve.types[type_id];
         let mut functions: Vec<&Function> = Vec::new();
