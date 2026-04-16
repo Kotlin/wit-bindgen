@@ -486,7 +486,7 @@ impl WorldGenerator for Kotlin {
             // let mut r#gen_world = self.interface(resolve, OutsideKind::Imported, ReferencedMaybeAnonymousInterface::from(interface_name_for_world));
 
             let mut iterator = generation_plan.in_place_funcs.iter().peekable();
-            // TODO figure out fq wit name, doesn't reallye xist for this case...
+            // TODO figure out fq wit name, doesn't really exist for this case...
 
 
             {
@@ -834,6 +834,9 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         for f in &functions {
             match f.kind {
                 FunctionKind::Method(id) | FunctionKind::Constructor(id) if id == type_id => {
+                    // TODO this whole approach is very hacky and wrong
+                    //      this only works here, because exported resources aren't used by anything we tested yet, they simply don't really generate methods right now.
+                    //      the fundamental problem is that we try to generate private source, export stub source, "declaration source" (the interface function declarations), "override source" (interface function overrides delegating to private source __wasm_import imports) in just one import/export function respectively, with one silly parameter that doesn't really make sense if you think about it.
                     if self.outside_kind.is_imported() {
                         self.import(f, /* in resources: dont override */ false);
                     } else {
@@ -902,7 +905,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
                 flag.name.to_lower_camel_case(),
             );
         }
-        // TODO(Kotlin): Add toString method
+        // TODO(Kotlin): Add toString method or allow the user to override it themselves
 
         self.src.push_str("}\n");
     }
@@ -2294,6 +2297,7 @@ pub fn is_option_type(resolve: &Resolve, ty: &Type) -> bool {
 
 pub fn to_kotlin_identifier(name: &str) -> String {
     match name {
+        // TODO use `` instead of appending '_'? a bit more idiomatic, but a bit less usable
         // Escape Kotlin keywords
         // Source: https://kotlinlang.org/docs/keyword-reference.html#hard-keywords
         "as" |
