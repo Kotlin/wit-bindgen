@@ -476,11 +476,15 @@ impl WorldGenerator for Kotlin {
             let kotlin_interface_name_for_world = interface_name_for_world.kotlin_name.as_str();
 
 
-            // two interfaces, inside an outer interface
-            // the outer interface should contain types, etc., so we actually need 3 separate interface generators
-            // unfortunately, interface generators can't coexist because they mutably borrow self, so we need to do this in sequence for each generator
-            // TODO find nicer design than interface generator mutably borrowing world generator...
-            self.src.push_str("\n@WitInterface(\"TODO(figure out)\")\n");
+            // Two interfaces, inside an outer interface
+            // - the outer interface should contain types, etc., so we actually need 3 separate interface generators
+            // - unfortunately, interface generators can't coexist because they mutably borrow self, so we need to do this in sequence for each generator
+            // - TODO find nicer design than interface generator mutably borrowing world generator...
+
+            // NOTE: $root seems to be the convention, see the other backends
+            //       This is more important for the actual @WasmImport/@WasmExport annotations below
+            //       The backslash just serves to escape it as a kotlin string, to prevent interpolation
+            self.src.push_str("\n@WitInterface(\"\\$root\")\n");
             self.src.push_str(format!("/*external */interface {kotlin_interface_name_for_world} {{\n").as_str());
 
             // let mut r#gen_world = self.interface(resolve, OutsideKind::Imported, ReferencedMaybeAnonymousInterface::from(interface_name_for_world));
@@ -492,8 +496,9 @@ impl WorldGenerator for Kotlin {
             {
                 let mut declarations_buf = String::new();
 
-                // TODO figure out kotlin names, might just be Imports
-                let mut r#gen_imports = self.interface(resolve, OutsideKind::Imported, ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo { fq_wit_name: "TODO-figure-out".to_string(), kotlin_name: format!("{kotlin_interface_name_for_world}.Imports") }));
+                // TODO figure out kotlin names, might just be Imports, without the prefix
+                // NOTE: see import section above for $root explanation
+                let mut r#gen_imports = self.interface(resolve, OutsideKind::Imported, ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo { fq_wit_name: "\\$root".to_string(), kotlin_name: format!("{kotlin_interface_name_for_world}.Imports") }));
 
                 // because we're inside an outer interface, increase indent manually
                 r#gen_imports.src.indent(1);
@@ -526,7 +531,8 @@ impl WorldGenerator for Kotlin {
                 let mut declarations_buf = String::new();
 
                 // TODO can't use the .Exports suffix as the name, because we can't re-open the interface to declare the object as part of it later
-                let mut r#gen_exports = self.interface(resolve, OutsideKind::Exported, ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo{fq_wit_name: "TODO-figure-out".to_string(), kotlin_name: format!("{kotlin_interface_name_for_world}Exports") }));
+                // NOTE: see import section above for $root explanation
+                let mut r#gen_exports = self.interface(resolve, OutsideKind::Exported, ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo{fq_wit_name: "\\$root".to_string(), kotlin_name: format!("{kotlin_interface_name_for_world}Exports") }));
 
                 // because we're inside an outer interface, increase indent manually
                 r#gen_exports.src.indent(1);
