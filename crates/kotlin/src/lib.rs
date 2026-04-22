@@ -745,6 +745,8 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     fn type_resource(&mut self, type_id: TypeId, name: &str, docs: &Docs) {
 
         if self.outside_kind.is_exported() {
+            debug_assert!(!self.outside_kind.is_imported(), "Exported and imported resources unsupported for now");
+            // once we support exporting and importing a resource, this r#gen.exported_resources needs to be reworked, because right now (resource !in exported_resources) === (reource imported); which won't hold true then
             self.r#gen.exported_resources.insert(type_id);
         }
 
