@@ -293,8 +293,12 @@ impl WorldGenerator for Kotlin {
         for (name, ty) in types {
             r#gen.define_type(name, *ty);
         }
+        // NOTE: r#gen.r#gen.src is the same as self.src, it just avoids borrowing problems
+
         // push to raw string, instead of to source, to avoid reindenting
         r#gen.r#gen.src.as_mut_string().push_str(&r#gen.src);
+        r#gen.r#gen.private_src.as_mut_string().push_str(&r#gen.private_top_level_src);
+        r#gen.r#gen.export_stubs_src.as_mut_string().push_str(&r#gen.export_stubs_src);
     }
 
     fn finish(&mut self, resolve: &Resolve, id: WorldId, files: &mut Files) -> Result<()> {
