@@ -1356,29 +1356,6 @@ impl InterfaceGenerator<'_> {
                 result.push_str(": ");
                 self.push_type_name(ty, &mut result);
             }
-            /*
-            Results::Named(params) => {
-                match params.len() {
-                    0 => result.push_str("Unit"),
-                    1 => result.push_str(self.type_name(&params[0].1).as_str()),
-                    count => {
-                        self.r#gen.tuple_counts.insert(count);
-                        uwrite!(
-                            result,
-                            "Tuple{count}<{}>",
-                            func.results
-                                .iter_types()
-                                .map(|ty| self.type_name(ty))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        );
-                    }
-                }
-            }
-            Results::Anon(ty) => {
-                result.push_str(self.type_name(ty).as_str());
-            }
-             */
         }
         result
     }
