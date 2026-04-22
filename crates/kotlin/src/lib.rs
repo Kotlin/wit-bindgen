@@ -2331,16 +2331,6 @@ fn kotlin_interface_name_from_world_key(resolve: &Resolve, key: &WorldKey) -> St
     }
 }
 
-fn fully_qualified_wit_interface_name_from_world_key(resolve: &Resolve, key: &WorldKey) -> String {
-    resolve.name_world_key(key)
-}
-
-fn interface_name_info_from_world_key(resolve: &Resolve, key: &WorldKey) -> InterfaceNameInfo {
-    let kotlin_name = kotlin_interface_name_from_world_key(resolve, key);
-    let fq_wit_name = fully_qualified_wit_interface_name_from_world_key(resolve, key);
-    InterfaceNameInfo { kotlin_name, fq_wit_name }
-}
-
 /// for types or functions declared directly inside a world, we still need an interface name, to export them to an appropriate kotlin interface
 fn interface_name_from_world_name(resolve: &Resolve, world: WorldId) -> InterfaceNameInfo {
     let world_name = resolve.worlds[world].name.as_str();
