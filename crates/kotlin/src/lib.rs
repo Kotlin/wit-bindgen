@@ -987,6 +987,8 @@ impl InterfaceGenerator<'_> {
         let is_exported = self.r#gen.exported_resources.contains(&id);
         let ty = &self.resolve.types[*id];
 
+        debug_assert_eq!(ty.kind, TypeDefKind::Resource);
+
         match &ty.owner {
             TypeOwner::Interface(ty_interface_id) => {
                 let kotlin_name = &self.r#gen.interface_kotlin_names[ty_interface_id];
