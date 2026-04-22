@@ -53,6 +53,12 @@ struct InterfaceNameInfo {
     kotlin_name: String
 }
 
+// NOTE: The following complicated machinery is to deal with the problem that interface references
+//       are messy. The idea is that any interface reference *could be* an anonymous reference
+//       (referenced by a name, not an id). So `ReferencedMaybeAnonymousInterface` is the more
+//       general case, while `ReferencedNonAnonymousInterface` is the stricter case where we know
+//       for sure that it's not anonymous (i.e. it has an id).
+
 #[derive(Debug, Clone)]
 struct ReferencedInterface<IdType> {
     id: IdType,
@@ -2115,7 +2121,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                      */
                 };
 
-                let called_interface_kotlin_name = format!("{}Impl", &self.r#gen.referenced_interface.name_info.kotlin_name);;
+                let called_interface_kotlin_name = format!("{}Impl", &self.r#gen.referenced_interface.name_info.kotlin_name);
                 let name = self.r#gen.kotlin_fun_name(func);
 
                 uwrite!(self.src, "{assignment}");
