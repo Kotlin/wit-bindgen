@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{format, Write};
 use std::hash::{Hash, Hasher};
 use std::mem;
+use wit_component::TypeKind;
 use wit_bindgen_core::abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType};
 use wit_bindgen_core::{dealias, uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns, Source, WorldGenerator};
 
@@ -167,6 +168,7 @@ pub struct Opts {
     #[cfg_attr(feature = "clap", arg(long, default_value = "bindings"))]
     pub kotlin_package_name: String,
 
+    // TODO make mandatory, or otherwise improve discoverability of this
     /// Which kotlin packages to import at the start of files.
     /// Comma-separated list of package names
     #[cfg_attr(feature = "clap", arg(long, value_delimiter = ','))]
@@ -508,9 +510,11 @@ impl WorldGenerator for Kotlin {
                     // only peek, so that the following loop can consume the same function again, if it's an export
                     iterator.next();
 
-                    r#gen_imports.import(function, true);
+                    let private_src_imported_fn_name = r#gen_imports.push_import_private_src_impl(function);
+
+                    r#gen_imports.push_import_adapter_impl(&function, true, &private_src_imported_fn_name);
                     // at the same time, collect the signatures to append them to the interface definition later
-                    let kotlin_sig = r#gen_imports.kotlin_signature(function);
+                    let kotlin_sig = r#gen_imports.kotlin_signature(function, false, false);
 
                     declarations_buf.push_str(&kotlin_sig);
                     declarations_buf.push_str("\n");
@@ -538,9 +542,9 @@ impl WorldGenerator for Kotlin {
                 r#gen_exports.src.indent(1);
 
                 while let Some((_, function, kind)) = iterator.next() && kind.is_exported() {
-                    r#gen_exports.export(function);
+                    r#gen_exports.push_export_stubs_and_private_src_impl(function);
                     // at the same time, collect the signatures to append them to the interface definition later
-                    let kotlin_sig = r#gen_exports.kotlin_signature(function);
+                    let kotlin_sig = r#gen_exports.kotlin_signature(function, false, false);
 
                     declarations_buf.push_str(&kotlin_sig);
                     declarations_buf.push_str("\n");
@@ -639,11 +643,13 @@ impl Kotlin {
             // TODO non-freestanding
             if func.kind == FunctionKind::Freestanding {
                 if outside_kind.is_imported() {
-                    r#gen.import(func, /* override the interface's methods */ true);
+                    let private_src_imported_fn_name = r#gen.push_import_private_src_impl(func);
+
+                    r#gen.push_import_adapter_impl(&func, true, &private_src_imported_fn_name);
                 }
                 if outside_kind.is_exported() {
-                    // this doesn't write anything to the actual source anymore
-                    r#gen.export(func);
+                    // don't need to write anything to the actual source
+                    r#gen.push_export_stubs_and_private_src_impl(func);
                 }
             }
         }
@@ -663,7 +669,7 @@ impl Kotlin {
         for (_name, func) in resolve.interfaces[referenced_interface_id].functions.iter() {
             // TODO non-freestanding
             if func.kind == FunctionKind::Freestanding {
-                let kotlin_sig = r#gen.kotlin_signature(func);
+                let kotlin_sig = r#gen.kotlin_signature(func, true, false);
                 r#gen.src.push_str(&kotlin_sig);
                 r#gen.src.push_str("\n");
             }
@@ -838,17 +844,20 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             uwriteln!(self.export_stubs_src, "class {camel}Impl : {kotlin_name}.{camel}{maybe_super_constructor_call} {{");
         }
 
+        // TODO: until we decide on the redesign for resources, it makes little sense to implement importing + exporting the same one yet
+        //       It's rare in any case, and might cause headaches with the old design that are irrelevant later
 
         for f in &functions {
             match f.kind {
                 FunctionKind::Method(id) | FunctionKind::Constructor(id) if id == type_id => {
-                    // TODO this whole approach is very hacky and wrong
-                    //      this only works here, because exported resources aren't used by anything we tested yet, they simply don't really generate methods right now.
-                    //      the fundamental problem is that we try to generate private source, export stub source, "declaration source" (the interface function declarations), "override source" (interface function overrides delegating to private source __wasm_import imports) in just one import/export function respectively, with one silly parameter that doesn't really make sense if you think about it.
                     if self.outside_kind.is_imported() {
-                        self.import(f, /* in resources: dont override */ false);
+                        let private_src_imported_fn_name = self.push_import_private_src_impl(f);
+
+                        self.push_import_adapter_impl(&f, false, &private_src_imported_fn_name);
                     } else {
-                        self.export(f);
+                        self.push_export_stubs_and_private_src_impl(f);
+
+                        uwriteln!(self.src, "{}", self.kotlin_signature(f, false, false));
                     }
                 }
                 _ => {}
@@ -866,9 +875,13 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             match f.kind {
                 FunctionKind::Static(id) if id == type_id => {
                     if self.outside_kind.is_imported() {
-                        self.import(f, /* in resources: dont override */ false);
+                        let private_src_imported_fn_name = self.push_import_private_src_impl(f);
+
+                        self.push_import_adapter_impl(&f, false, &private_src_imported_fn_name);
                     } else {
-                        self.export(f);
+                        self.push_export_stubs_and_private_src_impl(f);
+
+                        uwriteln!(self.src, "{}", self.kotlin_signature(f, false, false));
                     }
                 }
                 _ => {}
@@ -1166,49 +1179,10 @@ impl InterfaceGenerator<'_> {
         to_kotlin_identifier(func.item_name())
     }
 
-    // NOTE: import/export can be called on functions, that don't themselves belong to an interface
-    fn import(&mut self, func: &Function, annotate_methods_as_override:bool) {
-        let sig = self.resolve.wasm_signature(AbiVariant::GuestImport, func);
-        self.private_top_level_src.push_str("\n");
+    fn push_import_adapter_impl(&mut self, func: &&Function, annotate_method_as_override: bool, private_src_imported_fn_name: &String) {
+        // TODO reconsider whether we want kdoc here
+        self.src.push_str(&self.kotlin_signature(func, true, annotate_method_as_override));
 
-        uwriteln!(
-            self.private_top_level_src,
-            "@WasmImport(\"{}\", \"{}\")",
-            self.referenced_interface.name_info.fq_wit_name,
-            func.name
-        );
-        let name = self.kotlin_fun_name(func);
-        // TODO the .tmp call introduces non-determinism when it actually solves naming conflicts, maybe try to change that
-        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}",));
-        self.private_top_level_src.push_str("internal external fun ");
-        self.private_top_level_src.push_str(&import_name);
-        self.private_top_level_src.push_str("(");
-        for (i, param) in sig.params.iter().enumerate() {
-            if i > 0 {
-                self.private_top_level_src.push_str(", ");
-            }
-            uwrite!(self.private_top_level_src, "p{i}: ");
-            self.private_top_level_src.push_str(wasm_type(*param));
-        }
-        self.private_top_level_src.push_str("): ");
-        match sig.results.len() {
-            0 => self.private_top_level_src.push_str("Unit"),
-            1 => self.private_top_level_src.push_str(wasm_type(sig.results[0])),
-            _ => unimplemented!("multi-value return not supported"),
-        }
-        self.private_top_level_src.push_str("\n");
-
-        self.src.push_str(kdoc(&func.docs).as_str());
-        if annotate_methods_as_override {
-            self.src.push_str("override ");
-        }
-
-        {
-            let sig = self.kotlin_signature(func);
-            self.src.push_str(sig.as_str());
-            self.src.push_str("\n");
-
-        }
         if let FunctionKind::Constructor(_) = func.kind {
             // IIFE in primary construct call
             self.src.push_str(": this(ResourceHandle(run(fun (): Int");
@@ -1220,7 +1194,7 @@ impl InterfaceGenerator<'_> {
         // because the line doesn't perfectly end with a {, need to manually increase the indent
         self.src.indent(1);
 
-        let mut f = FunctionBindgen::new(self, &import_name, func.kind.clone());
+        let mut f = FunctionBindgen::new(self, &private_src_imported_fn_name, func.kind.clone());
         for (idx, param) in func.params.iter().enumerate() {
             let param = if idx == 0 && matches!(func.kind, FunctionKind::Method(_)) {
                 "this".to_string()
@@ -1256,14 +1230,48 @@ impl InterfaceGenerator<'_> {
         }
     }
 
-    fn export(&mut self, func: &Function) {
+    /// returns the exact name of the generated private __wasm_import_... function
+    fn push_import_private_src_impl(&mut self, func: &Function) -> String {
+        let sig = self.resolve.wasm_signature(AbiVariant::GuestImport, func);
+        self.private_top_level_src.push_str("\n");
+
+        uwriteln!(
+            self.private_top_level_src,
+            "@WasmImport(\"{}\", \"{}\")",
+            self.referenced_interface.name_info.fq_wit_name,
+            func.name
+        );
+        let name = self.kotlin_fun_name(func);
+        // TODO the .tmp call introduces non-determinism when it actually solves naming conflicts, maybe try to change that
+        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}", ));
+        self.private_top_level_src.push_str("internal external fun ");
+        self.private_top_level_src.push_str(&import_name);
+        self.private_top_level_src.push_str("(");
+        for (i, param) in sig.params.iter().enumerate() {
+            if i > 0 {
+                self.private_top_level_src.push_str(", ");
+            }
+            uwrite!(self.private_top_level_src, "p{i}: ");
+            self.private_top_level_src.push_str(wasm_type(*param));
+        }
+        self.private_top_level_src.push_str("): ");
+        match sig.results.len() {
+            0 => self.private_top_level_src.push_str("Unit"),
+            1 => self.private_top_level_src.push_str(wasm_type(sig.results[0])),
+            _ => unimplemented!("multi-value return not supported"),
+        }
+        self.private_top_level_src.push_str("\n");
+        import_name
+    }
+
+    fn push_export_stubs_and_private_src_impl(&mut self, func: &Function) {
         let wasm_sig = self.resolve.wasm_signature(AbiVariant::GuestExport, func);
 
-        let core_module_name = self.referenced_interface.name_info.fq_wit_name.as_str();
+        let fq_wit_name = self.referenced_interface.name_info.fq_wit_name.as_str();
         // TODO once it works, migrate to new mangling
-        let export_name = func.core_export_name(Some(core_module_name), Mangling::Legacy);
+        let export_name = func.core_export_name(Some(fq_wit_name), Mangling::Legacy);
         {
-            let kotlin_sig = self.kotlin_signature(func);
+            let kotlin_sig = self.kotlin_signature(func, false, false);
             if !matches!(func.kind, FunctionKind::Constructor(_)) {  // Constructor in exported abstract resource class is not needed
                 // uwriteln!(self.src, "abstract {kotlin_sig}");
                 uwriteln!(self.export_stubs_src, "override {kotlin_sig} {{ TODO() }}");
@@ -1322,17 +1330,27 @@ impl InterfaceGenerator<'_> {
         self.private_top_level_src.push_str("}\n");
     }
 
-    fn kotlin_signature(&self, func: &Function) -> String {
+    fn kotlin_signature(&self, func: &Function, emit_kdoc: bool, emit_override_keyword: bool) -> String {
         let mut result = String::new();
 
-        let name = self.kotlin_fun_name(func);
-        // TODO still think this is wrong, as ctors are only syntactic sugar for funcs returning owning self
-        if let FunctionKind::Constructor(_) = func.kind {
-            result.push_str("constructor");
-        } else {
-            result.push_str("fun ");
-            result.push_str(&name);
+        if emit_kdoc {
+            result.push_str(kdoc(&func.docs).as_str());
         }
+        if emit_override_keyword {
+            result.push_str("override ");
+        }
+
+        {
+            let name = self.kotlin_fun_name(func);
+            // TODO still think this is wrong, as ctors are only syntactic sugar for funcs returning owning self
+            if let FunctionKind::Constructor(_) = func.kind {
+                result.push_str("constructor");
+            } else {
+                result.push_str("fun ");
+                result.push_str(&name);
+            }
+        }
+
         result.push_str("(");
         for (i, param) in func.params.iter().enumerate() {
             if let FunctionKind::Method(_) = func.kind {
