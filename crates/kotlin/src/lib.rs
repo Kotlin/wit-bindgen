@@ -60,7 +60,7 @@ struct ReferencedInterface<IdType> {
 }
 
 type ReferencedNonAnonymousInterface = ReferencedInterface<InterfaceId>;
-/// Can also be generating world-level in-place functions, these don't have an interface id
+/// Can also be generating root (aka world-level, aka in-place) functions, these don't have an interface id
 type ReferencedMaybeAnonymousInterface = ReferencedInterface<Option<InterfaceId>>;
 
 impl Hash for ReferencedMaybeAnonymousInterface {
@@ -1018,7 +1018,7 @@ impl InterfaceGenerator<'_> {
                 }
             }
             TypeOwner::World(_) => {
-                // TODO(KT): World fqn
+                uwrite!(result, "root");
             }
             TypeOwner::None => {}
         }
@@ -2338,8 +2338,8 @@ fn kotlin_interface_name_from_world_key(resolve: &Resolve, key: &WorldKey) -> St
 /// for types or functions declared directly inside a world, we still need an interface name, to export them to an appropriate kotlin interface
 fn interface_name_from_world_name(resolve: &Resolve, world: WorldId) -> InterfaceNameInfo {
     let world_name = resolve.worlds[world].name.as_str();
-    // TODO decide on a (shorter) name, probably simply one of world-level/in-place
-    let iface_name = format!("{}-world-level-in-place-functions", world_name);
+    // other options would be in-place, or world-level functions. But given that $root seems to be the accepted namespace, this makes sense:
+    let iface_name = format!("{}-root-functions", world_name);
     // TODO not sure if the fqwit name really makes sense here, lets see
     InterfaceNameInfo { kotlin_name: iface_name.to_upper_camel_case(), fq_wit_name: iface_name }
 }
