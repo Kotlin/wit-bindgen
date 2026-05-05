@@ -314,6 +314,9 @@ impl WorldGenerator for Kotlin {
         let version = env!("CARGO_PKG_VERSION");
 
         let optin_declaration = "@file:OptIn(UnsafeWasmMemoryApi::class, ExperimentalWasmInterop::class, ComponentModelInternalApi::class)\n";
+        let fixed_kotlin_import_declaration = "\
+            import kotlin.wasm.unsafe.*\n\
+            ";
         let custom_kotlin_package_declaration = format!("package {}\n", self.opts.kotlin_package_name);
         let custom_kotlin_imports_declaration = {
             // TODO maybe do backticks for package name?
@@ -341,7 +344,7 @@ impl WorldGenerator for Kotlin {
             {optin_declaration}
             {custom_kotlin_package_declaration}
             {custom_kotlin_imports_declaration}
-            import kotlin.wasm.unsafe.*
+            {fixed_kotlin_import_declaration}
             class ComponentException(val value: Any?) : Throwable()
 
             sealed interface Option<out T> {{
@@ -461,7 +464,7 @@ impl WorldGenerator for Kotlin {
             {optin_declaration}
             {custom_kotlin_package_declaration}
             {custom_kotlin_imports_declaration}
-            import kotlin.wasm.unsafe.*
+            {fixed_kotlin_import_declaration}
             "
         );
 
