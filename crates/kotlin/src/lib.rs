@@ -316,6 +316,7 @@ impl WorldGenerator for Kotlin {
         let optin_declaration = "@file:OptIn(UnsafeWasmMemoryApi::class, ExperimentalWasmInterop::class, ComponentModelInternalApi::class)\n";
         let fixed_kotlin_import_declaration = "\
             import kotlin.wasm.unsafe.*\n\
+            import kotlin.reflect.KClass\n\
             ";
         let custom_kotlin_package_declaration = format!("package {}\n", self.opts.kotlin_package_name);
         let custom_kotlin_imports_declaration = {
@@ -970,7 +971,29 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             self.src.push_str(&variant_name);
             self.src.push_str("\n");
         }
-        self.src.push_str("}");
+
+        // supporting methods
+        // TODO see if we want to keep this
+        self.src.push_str(format!(r#"
+/**
+ * TODO maybe not private? increases discoverability of how to do this:
+ * TODO could ofc also do reified inline <T : Any> clazz() in ComponentSupport.kt if we dont make it private anyway.
+ Could also call it variantCase() or smth in that case
+ * switch(x.clazz()) {{
+ *   Case1.clazz() -> ...
+ * }}
+ */
+private fun clazz(): KClass<out {0}> {{
+  val clazz = this::class;
+  return clazz
+}}
+
+fun isSameVariantCaseAs(other: {0}): Boolean {{
+  return this.clazz() == other.clazz()
+}}
+"#, variant_name).as_str());
+
+        self.src.push_str("}\n");
     }
 
     fn type_enum(&mut self, _id: TypeId, name: &str, enum_: &Enum, docs: &Docs) {
