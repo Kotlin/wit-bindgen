@@ -505,8 +505,8 @@ impl WorldGenerator for Kotlin {
             class ComponentException(val value: Any?) : Throwable()
 
             sealed interface Option<out T> {{
-                data class Some<T2>(val value: T2) : Option<T2>
-                data object None : Option<Nothing>
+                class Some<T2>(val value: T2) : Option<T2>
+                object None : Option<Nothing>
             }}
 
             internal value class ResourceHandle(internal val value: Int)
@@ -599,7 +599,7 @@ impl WorldGenerator for Kotlin {
             tuple_counts.sort();
 
             for tup_size in tuple_counts {
-                uwrite!(support_kt_str, "data class Tuple{tup_size}<");
+                uwrite!(support_kt_str, "class Tuple{tup_size}<");
                 for i in 0..*tup_size {
                     uwrite!(support_kt_str, "T{i},");
                 }
@@ -750,7 +750,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     fn type_record(&mut self, _id: TypeId, name: &str, record: &Record, docs: &Docs) {
         self.src.push_str("\n");
         self.src.push_str(kdoc(docs).as_str());
-        self.src.push_str("data class ");
+        self.src.push_str("class ");
         let name = name.to_upper_camel_case();
         self.src.push_str(&name);
         self.src.push_str("(\n");
@@ -976,11 +976,11 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             let case_name = case.name.to_upper_camel_case();
             match &case.ty {
                 None => {
-                    self.src.push_str("data object ");
+                    self.src.push_str("object ");
                     self.src.push_str(case_name.as_str());
                 }
                 Some(ty) => {
-                    self.src.push_str("data class ");
+                    self.src.push_str("class ");
                     self.src.push_str(case_name.as_str());
                     self.src.push_str("(val value: ");
                     self.src.push_str(self.type_name(ty).as_str());
@@ -1837,11 +1837,11 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     uwriteln!(self.src, "{} -> {{", i);
                     self.src.push_str(&block);
                     match case.ty {
-                        None => {  // data object case
+                        None => {  // object case
                             assert_eq!(block_results.len(), 0);
                             uwriteln!(self.src, "{case_class_qualified_name}")
                         }
-                        Some(_) => {  // data class with single property case
+                        Some(_) => {  // class with single property case
                             assert_eq!(block_results.len(), 1);
                             let block_result = &block_results[0];
                             uwriteln!(self.src, "{case_class_qualified_name}({block_result})")
