@@ -313,9 +313,8 @@ impl WorldGenerator for Kotlin {
 
         let version = env!("CARGO_PKG_VERSION");
 
-        let optin_declaration = "@file:OptIn(UnsafeWasmMemoryApi::class, ExperimentalWasmInterop::class, ComponentModelInternalApi::class)\n";
+        let optin_declaration = "@file:OptIn(kotlin.wasm.unsafe.UnsafeWasmMemoryApi::class, kotlin.wasm.ExperimentalWasmInterop::class, kotlin.wasm.unsafe.ComponentModelInternalApi::class)\n";
         let fixed_kotlin_import_declaration = "\
-            import kotlin.wasm.unsafe.*\n\
             ";
         let custom_kotlin_package_declaration = format!("package {}\n", self.opts.kotlin_package_name);
         let custom_kotlin_imports_declaration = {
@@ -496,43 +495,43 @@ impl WorldGenerator for Kotlin {
             {custom_kotlin_package_declaration}
             {custom_kotlin_imports_declaration}
             {fixed_kotlin_import_declaration}
-            class ComponentException(val value: Any?) : Throwable()
+            class ComponentException(val value: kotlin.Any?) : kotlin.Throwable()
 
             sealed interface Option<out T> {{
                 data class Some<T2>(val value: T2) : Option<T2>
-                data object None : Option<Nothing>
+                data object None : Option<kotlin.Nothing>
             }}
 
-            internal value class ResourceHandle(internal val value: Int)
+            internal value class ResourceHandle(internal val value: kotlin.Int)
 
-            @WasmExport
-            fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
-                componentModelRealloc(ptr, oldSize, newSize)
+            @kotlin.wasm.WasmExport
+            fun cabi_realloc(ptr: kotlin.Int, oldSize: kotlin.Int, align: kotlin.Int, newSize: kotlin.Int): kotlin.Int =
+                kotlin.wasm.unsafe.componentModelRealloc(ptr, oldSize, newSize)
 
-            fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
+            fun kotlin.wasm.unsafe.MemoryAllocator.STRING_TO_MEM(s: kotlin.String): kotlin.Int =
                 writeToLinearMemory(s.encodeToByteArray()).address.toInt()
 
-            fun STRING_FROM_MEM(addr: Int, len: Int): String =
+            fun STRING_FROM_MEM(addr: kotlin.Int, len: kotlin.Int): kotlin.String =
                 loadByteArray(addr.ptr, len).decodeToString()
 
-            fun MALLOC(size: Int, align: Int): Int = TODO()
+            fun MALLOC(size: kotlin.Int, align: kotlin.Int): kotlin.Int = TODO()
 
-            val Int.ptr: Pointer
-                get() = Pointer(this.toUInt())
+            val kotlin.Int.ptr: kotlin.wasm.unsafe.Pointer
+                get() = kotlin.wasm.unsafe.Pointer(this.toUInt())
 
-            fun Pointer.loadUByte(): UByte = loadByte().toUByte()
-            fun Pointer.loadUShort(): UShort = loadShort().toUShort()
-            fun Pointer.loadUInt(): UInt = loadInt().toUInt()
-            fun Pointer.loadULong(): ULong = loadLong().toULong()
+            fun kotlin.wasm.unsafe.Pointer.loadUByte(): kotlin.UByte = loadByte().toUByte()
+            fun kotlin.wasm.unsafe.Pointer.loadUShort(): kotlin.UShort = loadShort().toUShort()
+            fun kotlin.wasm.unsafe.Pointer.loadUInt(): kotlin.UInt = loadInt().toUInt()
+            fun kotlin.wasm.unsafe.Pointer.loadULong(): kotlin.ULong = loadLong().toULong()
 
-            internal fun MemoryAllocator.writeToLinearMemory(value: String): Pointer =
+            internal fun kotlin.wasm.unsafe.MemoryAllocator.writeToLinearMemory(value: kotlin.String): kotlin.wasm.unsafe.Pointer =
                 writeToLinearMemory(value.encodeToByteArray())
 
-            internal fun loadString(addr: Pointer, size: Int): String =
+            internal fun loadString(addr: kotlin.wasm.unsafe.Pointer, size: kotlin.Int): kotlin.String =
                 loadByteArray(addr, size).decodeToString()
-            internal fun loadByteArray(addr: Pointer, size: Int): ByteArray =
-                ByteArray(size) {{ i -> (addr + i).loadByte() }}
-            internal fun MemoryAllocator.writeToLinearMemory(array: ByteArray): Pointer {{
+            internal fun loadByteArray(addr: kotlin.wasm.unsafe.Pointer, size: kotlin.Int): kotlin.ByteArray =
+                kotlin.ByteArray(size) {{ i -> (addr + i).loadByte() }}
+            internal fun kotlin.wasm.unsafe.MemoryAllocator.writeToLinearMemory(array: kotlin.ByteArray): kotlin.wasm.unsafe.Pointer {{
                 val pointer = allocate(array.size)
                 var currentPointer = pointer
                 array.forEach {{
@@ -543,18 +542,18 @@ impl WorldGenerator for Kotlin {
             }}
 
 
-            fun Pointer.loadFloat(): Float = Float.fromBits(loadInt())
-            fun Pointer.loadDouble(): Double = Double.fromBits(loadLong())
-            fun Pointer.storeFloat(value: Float) {{ storeInt(value.toRawBits()) }}
-            fun Pointer.storeDouble(value: Double) {{ storeLong(value.toRawBits()) }}
+            fun kotlin.wasm.unsafe.Pointer.loadFloat(): kotlin.Float = kotlin.Float.fromBits(loadInt())
+            fun kotlin.wasm.unsafe.Pointer.loadDouble(): kotlin.Double = kotlin.Double.fromBits(loadLong())
+            fun kotlin.wasm.unsafe.Pointer.storeFloat(value: kotlin.Float) {{ storeInt(value.toRawBits()) }}
+            fun kotlin.wasm.unsafe.Pointer.storeDouble(value: kotlin.Double) {{ storeLong(value.toRawBits()) }}
 
             internal object RepTable {{
-                private val list = mutableListOf<Any>();
-                private var firstVacant: Int? = null
-                private data class Vacant(var next: Int?)
+                private val list = kotlin.collections.mutableListOf<kotlin.Any>();
+                private var firstVacant: kotlin.Int? = null
+                private data class Vacant(var next: kotlin.Int?)
 
-                fun add(v: Any): Int {{
-                    val rep: Int
+                fun add(v: kotlin.Any): kotlin.Int {{
+                    val rep: kotlin.Int
                     if (firstVacant != null) {{
                         rep = firstVacant!!
                         firstVacant = (list[rep] as Vacant).next
@@ -566,25 +565,25 @@ impl WorldGenerator for Kotlin {
                     return rep
                 }}
 
-                fun get(rep: Int): Any {{
+                fun get(rep: kotlin.Int): kotlin.Any {{
                     check(list[rep] !is Vacant)
                     return list[rep];
                 }}
 
-                fun remove(rep: Int): Any {{
+                fun remove(rep: kotlin.Int): kotlin.Any {{
                     val v = get(rep)
                     list[rep] = Vacant(firstVacant)
                     firstVacant = rep
                     return v
                 }}
 
-                override fun toString(): String {{
+                override fun toString(): kotlin.String {{
                     return \"RepTable(firstVacant=${{firstVacant}}, list = $list)\"
                 }}
             }}
 
             // Annotations
-            annotation class WitInterface(val package_: String)
+            annotation class WitInterface(val package_: kotlin.String)
             annotation class WitImport
             "
             );
@@ -786,19 +785,19 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
         self.private_top_level_src.push_str(&format!(
             r#"
-                @WasmImport("{import_module}", "[resource-drop]{name}")
-                internal external fun {imported_function_prefix}_drop(handle: Int): Unit
+                @kotlin.wasm.WasmImport("{import_module}", "[resource-drop]{name}")
+                internal external fun {imported_function_prefix}_drop(handle: kotlin.Int): kotlin.Unit
             "#
         ));
 
         if self.outside_kind.is_exported() {
             self.private_top_level_src.push_str(&format!(
                 r#"
-                    @WasmImport("{import_module}", "[resource-new]{name}")
-                    internal external fun {imported_function_prefix}_new(handle: Int): Int
+                    @kotlin.wasm.WasmImport("{import_module}", "[resource-new]{name}")
+                    internal external fun {imported_function_prefix}_new(handle: kotlin.Int): kotlin.Int
 
-                    @WasmImport("{import_module}", "[resource-rep]{name}")
-                    internal external fun {imported_function_prefix}_rep(handle: Int): Int
+                    @kotlin.wasm.WasmImport("{import_module}", "[resource-rep]{name}")
+                    internal external fun {imported_function_prefix}_rep(handle: kotlin.Int): kotlin.Int
                 "#
             ));
         }
@@ -808,11 +807,20 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             uwrite!(self.src, "abstract ")
         }
 
-        uwriteln!(self.src, "class {camel} : AutoCloseable {{");
-        uwriteln!(self.src, "internal var __handle: ResourceHandle = ResourceHandle(0)");
+        uwriteln!(self.src, "class {camel} : kotlin.AutoCloseable {{");
+        uwriteln!(
+            self.src,
+            "internal var __handle: {}.ResourceHandle = {0}.ResourceHandle(0)",
+            self.r#gen.opts.kotlin_package_name
+        );
 
-        if self.outside_kind.is_imported() { // Exported constructor handle
-            uwriteln!(self.src, "internal constructor(handle: ResourceHandle) {{ __handle = handle }}");
+        if self.outside_kind.is_imported() {
+            // Exported constructor handle
+            uwriteln!(
+                self.src,
+                "internal constructor(handle: {}.ResourceHandle) {{ __handle = handle }}",
+                self.r#gen.opts.kotlin_package_name
+            );
         }
 
         // TODO: Zero out the handle
@@ -920,12 +928,12 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         let name = name.to_upper_camel_case();
         self.src.push_str(&name);
         // TODO(Kotlin): Support underlying values smaller than Long
-        self.src.push_str(" internal constructor(val _value: Long) {\n");
+        self.src.push_str(" internal constructor(val _value: kotlin.Long) {\n");
         self.src.push_str("constructor(\n");
         for flag in flags.flags.iter() {
             uwrite!(
                 self.src,
-                "{}: Boolean = false,",
+                "{}: kotlin.Boolean = false,",
                 flag.name.to_lower_camel_case(),
             );
         }
@@ -941,7 +949,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         for (i, flag) in flags.flags.iter().enumerate() {
             uwriteln!(
                 self.src,
-                "val {}: Boolean get() = (_value and (1L shl {i})) != 0L",
+                "val {}: kotlin.Boolean get() = (_value and (1L shl {i})) != 0L",
                 flag.name.to_lower_camel_case(),
             );
         }
@@ -1072,19 +1080,19 @@ impl InterfaceGenerator<'_> {
 
     fn push_type_name(&self, ty: &Type, dst: &mut String) {
         match ty {
-            Type::Bool => dst.push_str("Boolean"),
-            Type::Char => dst.push_str("Int"), // TODO: Find a better type?
-            Type::U8 => dst.push_str("UByte"),
-            Type::S8 => dst.push_str("Byte"),
-            Type::U16 => dst.push_str("UShort"),
-            Type::S16 => dst.push_str("Short"),
-            Type::U32 => dst.push_str("UInt"),
-            Type::S32 => dst.push_str("Int"),
-            Type::U64 => dst.push_str("ULong"),
-            Type::S64 => dst.push_str("Long"),
-            Type::F32 => dst.push_str("Float"),
-            Type::F64 => dst.push_str("Double"),
-            Type::String => dst.push_str("String"),
+            Type::Bool => dst.push_str("kotlin.Boolean"),
+            Type::Char => dst.push_str("kotlin.Int"), // TODO: Find a better type?
+            Type::U8 => dst.push_str("kotlin.UByte"),
+            Type::S8 => dst.push_str("kotlin.Byte"),
+            Type::U16 => dst.push_str("kotlin.UShort"),
+            Type::S16 => dst.push_str("kotlin.Short"),
+            Type::U32 => dst.push_str("kotlin.UInt"),
+            Type::S32 => dst.push_str("kotlin.Int"),
+            Type::U64 => dst.push_str("kotlin.ULong"),
+            Type::S64 => dst.push_str("kotlin.Long"),
+            Type::F32 => dst.push_str("kotlin.Float"),
+            Type::F64 => dst.push_str("kotlin.Double"),
+            Type::String => dst.push_str("kotlin.String"),
             Type::Id(id) => self.push_type_id_name(id, dst),
             Type::ErrorContext => {unimplemented!()}
         }
@@ -1132,20 +1140,20 @@ impl InterfaceGenerator<'_> {
             TypeDefKind::Tuple(tuple) => {
                 match tuple.types.len() {
                     0 => {
-                        dst.push_str("Unit");
+                        dst.push_str("kotlin.Unit");
                     }
                     1 => {
                         self.push_type_name(&tuple.types[0], dst);
                     }
                     2 => {
-                        dst.push_str("Pair<");
+                        dst.push_str("kotlin.Pair<");
                         self.push_type_name(&tuple.types[0], dst);
                         dst.push_str(", ");
                         self.push_type_name(&tuple.types[1], dst);
                         dst.push_str(">");
                     }
                     3 => {
-                        dst.push_str("Triple<");
+                        dst.push_str("kotlin.Triple<");
                         self.push_type_name(&tuple.types[0], dst);
                         dst.push_str(", ");
                         self.push_type_name(&tuple.types[1], dst);
@@ -1154,7 +1162,11 @@ impl InterfaceGenerator<'_> {
                         dst.push_str(">");
                     }
                     len => {
-                        uwrite!(dst, "Tuple{len}<");
+                        uwrite!(
+                            dst,
+                            "{}.Tuple{len}<",
+                            self.r#gen.opts.kotlin_package_name
+                        );
                         for (idx, ty) in tuple.types.iter().enumerate() {
                             if idx != 0 {
                                 uwrite!(dst, ", ");
@@ -1167,7 +1179,10 @@ impl InterfaceGenerator<'_> {
             }
             TypeDefKind::Option(ty) => {
                 if is_option_type(self.resolve, ty) {
-                    dst.push_str("Option<");
+                    dst.push_str(&format!(
+                        "{}.Option<",
+                        self.r#gen.opts.kotlin_package_name
+                    ));
                     self.push_type_name(ty, dst);
                     dst.push_str(">");
                 } else {
@@ -1177,15 +1192,15 @@ impl InterfaceGenerator<'_> {
                 }
             }
             TypeDefKind::Result(r) => {
-                dst.push_str("Result<");
+                dst.push_str("kotlin.Result<");
                 match &r.ok {
                     Some(ty) => self.push_type_name(ty, dst),
-                    None => dst.push_str("Unit"),
+                    None => dst.push_str("kotlin.Unit"),
                 }
                 dst.push_str(">");
             }
             TypeDefKind::List(ty) => {
-                dst.push_str("List<");
+                dst.push_str("kotlin.collections.List<");
                 self.push_type_name(ty, dst);
                 dst.push_str(">");
             }
@@ -1213,12 +1228,12 @@ impl InterfaceGenerator<'_> {
 
         if let FunctionKind::Constructor(_) = func.kind {
             // IIFE in primary construct call
-            self.src.push_str(": this(ResourceHandle(run(fun (): Int");
+            uwrite!(self.src, ": this({}.ResourceHandle(run(fun (): kotlin.Int", self.r#gen.opts.kotlin_package_name);
         }
         self.src.push_str(" {\n");
         self.src.push_str("// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Canonical ABI Adapter Code\">\n");
 
-        self.src.push_str("withScopedMemoryAllocator { allocator ->\n");
+        self.src.push_str("kotlin.wasm.unsafe.withScopedMemoryAllocator { allocator ->\n");
         // because the line doesn't perfectly end with a {, need to manually increase the indent
         self.src.indent(1);
 
@@ -1265,7 +1280,7 @@ impl InterfaceGenerator<'_> {
 
         uwriteln!(
             self.private_top_level_src,
-            "@WasmImport(\"{}\", \"{}\")",
+            "@kotlin.wasm.WasmImport(\"{}\", \"{}\")",
             self.referenced_interface.name_info.fq_wit_name,
             func.name
         );
@@ -1284,7 +1299,7 @@ impl InterfaceGenerator<'_> {
         }
         self.private_top_level_src.push_str("): ");
         match sig.results.len() {
-            0 => self.private_top_level_src.push_str("Unit"),
+            0 => self.private_top_level_src.push_str("kotlin.Unit"),
             1 => self.private_top_level_src.push_str(wasm_type(sig.results[0])),
             _ => unimplemented!("multi-value return not supported"),
         }
@@ -1317,7 +1332,7 @@ impl InterfaceGenerator<'_> {
 
         uwriteln!(
             self.private_top_level_src,
-            "\n@WasmExport(\"{export_name}\")"
+            "\n@kotlin.wasm.WasmExport(\"{export_name}\")"
         );
         let name = self.kotlin_fun_name(func);
         let export_fun_name = self.r#gen.names.tmp(&format!("__wasm_export_{name}"));
@@ -1339,13 +1354,13 @@ impl InterfaceGenerator<'_> {
         }
         s.push_str("): ");
         match wasm_sig.results.len() {
-            0 => s.push_str("Unit"),
+            0 => s.push_str("kotlin.Unit"),
             1 => s.push_str(wasm_type(wasm_sig.results[0])),
             _ => unimplemented!("multi-value return not supported"),
         }
         s.push_str(" {\n");
-        s.push_str("freeAllComponentModelReallocAllocatedMemory()\n");
-        s.push_str("withScopedMemoryAllocator { allocator ->\n");
+        s.push_str("kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory()\n");
+        s.push_str("kotlin.wasm.unsafe.withScopedMemoryAllocator { allocator ->\n");
         // because the line doesn't perfectly end with a {, need to manually increase the indent
         s.indent(1);
 
@@ -1571,7 +1586,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::TupleLift { tuple, ty } => {
                 match tuple.types.len() {
                     0 => {
-                        results.push("Unit".to_string());
+                        results.push("kotlin.Unit".to_string());
                     }
                     1 => {
                         results.push(operands[0].clone());
@@ -1632,15 +1647,20 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     uwriteln!(
                         self.src,
                         "if ({handle} == 0) {{
-                             var {local_rep} = RepTable.add({op});
+                             var {local_rep} = {}.RepTable.add({op});
                              {handle} = {imported_function_prefix}_new({local_rep});
                          }}
-                         "
+                         ",
+                         self.r#gen.r#gen.opts.kotlin_package_name
                     );
                 }
 
                 if is_own {
-                    uwriteln!(self.src, "{op}.__handle = ResourceHandle(0);");
+                    uwriteln!(
+                        self.src,
+                        "{op}.__handle = {}.ResourceHandle(0);",
+                        self.r#gen.r#gen.opts.kotlin_package_name
+                    );
                 }
 
                 results.push(format!("{handle}"))
@@ -1659,12 +1679,17 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 if is_exported {
                     if is_own {
                         uwriteln!(self.src,
-                            "val {resource} = RepTable.get({imported_function_prefix}_rep({op})) as {resource_type_name}
-                                 {resource}.__handle = ResourceHandle({op})
-                            "
+                            "val {resource} = {}.RepTable.get({imported_function_prefix}_rep({op})) as {resource_type_name}
+                                 {resource}.__handle = {0}.ResourceHandle({op})
+                            ",
+                            self.r#gen.r#gen.opts.kotlin_package_name
                         );
                     } else {
-                        uwriteln!(self.src, "val {resource} = RepTable.get({op}) as {resource_type_name}");
+                        uwriteln!(
+                            self.src,
+                            "val {resource} = {}.RepTable.get({op}) as {resource_type_name}",
+                            self.r#gen.r#gen.opts.kotlin_package_name
+                        );
                     }
                 } else {
                     if let FunctionKind::Constructor(_) = self.kind {
@@ -1672,7 +1697,11 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         // is then wrapped inside generated class constructor
                         uwriteln!(self.src, "val {resource} = {op}");
                     } else {
-                        uwriteln!(self.src, "val {resource} = {resource_type_name}(ResourceHandle({op}))")
+                        uwriteln!(
+                            self.src,
+                            "val {resource} = {resource_type_name}({}.ResourceHandle({op}))",
+                            self.r#gen.r#gen.opts.kotlin_package_name
+                        )
                         // TODO: Drop this resource at the end of the function
                     }
                 }
@@ -1845,11 +1874,12 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     self.src.push_str(format!(
                         "\
                     val {option_name} = {op0}
-                    if ({option_name} is Option.Some) {{
+                    if ({option_name} is {}.Option.Some) {{
                         val {some_payload} = {option_name}.value
                         {some}}} else {{
                         {none}}}
-                    "
+                    ",
+                        self.r#gen.r#gen.opts.kotlin_package_name
                     ).as_str());
                 } else {
                     self.src.push_str(format!(
@@ -1878,10 +1908,11 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     uwriteln!(
                         self.src,
                         "val {result} = if ({op0} == 1) {{
-                            {some} Option.Some({some_result})
+                            {some} {}.Option.Some({some_result})
                         }} else {{
-                            {none} Option.None
-                        }}"
+                            {none} {0}.Option.None
+                        }}",
+                        self.r#gen.r#gen.opts.kotlin_package_name
                     );
                 } else {
                     uwriteln!(
@@ -1928,7 +1959,10 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 };
                 let bind_err = if let Some(err_ty) = &result.err {
                     let err_kt_ty_name = self.r#gen.type_name(err_ty);
-                    format!("val {err_payload} = ({op0}.exceptionOrNull() as ComponentException).value as {err_kt_ty_name}\n")
+                    format!(
+                        "val {err_payload} = ({op0}.exceptionOrNull() as {}.ComponentException).value as {err_kt_ty_name}\n",
+                        self.r#gen.r#gen.opts.kotlin_package_name
+                    )
                 } else {
                     String::new()
                 };
@@ -1965,20 +1999,26 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
 
                 let kt_result_type: String = self.r#gen.type_name(&Type::Id(*ty)).clone();
-                debug_assert!(kt_result_type.starts_with("Result"));
-                let type_arguments = kt_result_type.strip_prefix("Result").unwrap();
+                debug_assert!(kt_result_type.starts_with("kotlin.Result"));
+                let type_arguments = kt_result_type.strip_prefix("kotlin.Result").unwrap();
                 let ok_result = if result.ok.is_some() {
                     let ok_result = &ok_results[0];
-                    format!("Result.success{type_arguments}({ok_result})")
+                    format!("kotlin.Result.success{type_arguments}({ok_result})")
                 } else {
-                    format!("Result.success{type_arguments}(Unit)")
+                    format!("kotlin.Result.success{type_arguments}(Unit)")
                 };
 
                 let err_result = if let Some(_) = result.err.as_ref() {
                     let err_result = &err_results[0];
-                    format!("Result.failure{type_arguments}(ComponentException({err_result}))")
+                    format!(
+                        "kotlin.Result.failure{type_arguments}({}.ComponentException({err_result}))",
+                        self.r#gen.r#gen.opts.kotlin_package_name
+                    )
                 } else {
-                    format!("Result.failure{type_arguments}(ComponentException(Unit))")
+                    format!(
+                        "kotlin.Result.failure{type_arguments}({}.ComponentException(kotlin.Unit))",
+                        self.r#gen.r#gen.opts.kotlin_package_name
+                    )
                 };
 
                 uwriteln!(
@@ -2025,7 +2065,10 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::StringLift { .. } => {
                 let ptr = &operands[0];
                 let len = &operands[1];
-                results.push(format!("STRING_FROM_MEM({ptr}, {len})"));
+                results.push(format!(
+                    "{}.STRING_FROM_MEM({ptr}, {len})",
+                    self.r#gen.r#gen.opts.kotlin_package_name
+                ));
             }
 
             Instruction::ListLower { element, .. } => {
@@ -2070,7 +2113,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 uwrite!(
                     self.src,
                     "
-                    val {list} = ArrayList<{ty}>({length})
+                    val {list} = kotlin.collections.ArrayList<{ty}>({length})
                     for ({index} in 0 until {length}) {{
                         val base = ({address}) + ({index} * {size_wasm32})
                         {body}
@@ -2106,7 +2149,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     self.src.push_str(op);
                 }
                 self.src.push_str(")\n");
-                self.src.push_str("freeAllComponentModelReallocAllocatedMemory();\n");
+                self.src.push_str("kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory();\n");
             }
 
             Instruction::CallInterface { func, async_ } => {
@@ -2181,7 +2224,11 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     count => {
                         let results = operands.join(", ");
                         self.r#gen.r#gen.tuple_counts.insert(count);
-                        uwriteln!(self.src, "return Tuple{count}({results})")
+                        uwriteln!(
+                            self.src,
+                            "return {}.Tuple{count}({results})",
+                            self.r#gen.r#gen.opts.kotlin_package_name
+                        )
                     }
                 }
             }
@@ -2288,9 +2335,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
 fn perform_cast(op: &String, cast: &Bitcast) -> String {
     match cast {
-        Bitcast::I32ToF32 => format!("Float.fromBits({op})"),
-        Bitcast::I64ToF32 => format!("Float.fromBits({op}.toInt())"),
-        Bitcast::I64ToF64 => format!("Double.fromBits({op})"),
+        Bitcast::I32ToF32 => format!("kotlin.Float.fromBits({op})"),
+        Bitcast::I64ToF32 => format!("kotlin.Float.fromBits({op}.toInt())"),
+        Bitcast::I64ToF64 => format!("kotlin.Double.fromBits({op})"),
         Bitcast::F32ToI32
         | Bitcast::F64ToI64 => format!("{op}.toRawBits()"),
         Bitcast::F32ToI64 => format!("{op}.toRawBits().toLong()"),
@@ -2320,13 +2367,13 @@ fn perform_cast(op: &String, cast: &Bitcast) -> String {
 
 fn wasm_type(ty: WasmType) -> &'static str {
     match ty {
-        WasmType::I32 => "Int",
-        WasmType::I64 => "Long",
-        WasmType::F32 => "Float",
-        WasmType::F64 => "Double",
-        WasmType::Pointer => "Int",
-        WasmType::PointerOrI64 => "Long",
-        WasmType::Length => "Int"
+        WasmType::I32 => "kotlin.Int",
+        WasmType::I64 => "kotlin.Long",
+        WasmType::F32 => "kotlin.Float",
+        WasmType::F64 => "kotlin.Double",
+        WasmType::Pointer => "kotlin.Int",
+        WasmType::PointerOrI64 => "kotlin.Long",
+        WasmType::Length => "kotlin.Int"
     }
 }
 
