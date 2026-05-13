@@ -1292,7 +1292,14 @@ impl InterfaceGenerator<'_> {
 
         let fq_wit_name = self.referenced_interface.name_info.fq_wit_name.as_str();
         // TODO once it works, migrate to new mangling
-        let export_name = func.core_export_name(Some(fq_wit_name), Mangling::Legacy);
+        let export_name = func.core_export_name(
+            if fq_wit_name == "\\$root" {
+                None
+            } else {
+                Some(fq_wit_name)
+            },
+            Mangling::Legacy,
+        );
         {
             let kotlin_sig = self.kotlin_signature(func, false, false);
             if !matches!(func.kind, FunctionKind::Constructor(_)) {  // Constructor in exported abstract resource class is not needed
