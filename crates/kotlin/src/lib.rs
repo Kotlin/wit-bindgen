@@ -335,127 +335,6 @@ impl WorldGenerator for Kotlin {
             kotlin_imports
         };
 
-        let mut write_component_support_kt = ||{
-            let mut support_kt_str = Source::default();
-
-            wit_bindgen_core::generated_preamble(&mut support_kt_str, version);
-            uwriteln!(support_kt_str,
-            "
-            {optin_declaration}
-            {custom_kotlin_package_declaration}
-            {custom_kotlin_imports_declaration}
-            {fixed_kotlin_import_declaration}
-            class ComponentException(val value: Any?) : Throwable()
-
-            sealed interface Option<out T> {{
-                data class Some<T2>(val value: T2) : Option<T2>
-                data object None : Option<Nothing>
-            }}
-
-            internal value class ResourceHandle(internal val value: Int)
-
-            @WasmExport
-            fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
-                componentModelRealloc(ptr, oldSize, newSize)
-
-            fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
-                writeToLinearMemory(s.encodeToByteArray()).address.toInt()
-
-            fun STRING_FROM_MEM(addr: Int, len: Int): String =
-                loadByteArray(addr.ptr, len).decodeToString()
-
-            fun MALLOC(size: Int, align: Int): Int = TODO()
-
-            val Int.ptr: Pointer
-                get() = Pointer(this.toUInt())
-
-            fun Pointer.loadUByte(): UByte = loadByte().toUByte()
-            fun Pointer.loadUShort(): UShort = loadShort().toUShort()
-            fun Pointer.loadUInt(): UInt = loadInt().toUInt()
-            fun Pointer.loadULong(): ULong = loadLong().toULong()
-
-            internal fun MemoryAllocator.writeToLinearMemory(value: String): Pointer =
-                writeToLinearMemory(value.encodeToByteArray())
-
-            internal fun loadString(addr: Pointer, size: Int): String =
-                loadByteArray(addr, size).decodeToString()
-            internal fun loadByteArray(addr: Pointer, size: Int): ByteArray =
-                ByteArray(size) {{ i -> (addr + i).loadByte() }}
-            internal fun MemoryAllocator.writeToLinearMemory(array: ByteArray): Pointer {{
-                val pointer = allocate(array.size)
-                var currentPointer = pointer
-                array.forEach {{
-                    currentPointer.storeByte(it)
-                    currentPointer += 1
-                }}
-                return pointer
-            }}
-
-
-            fun Pointer.loadFloat(): Float = Float.fromBits(loadInt())
-            fun Pointer.loadDouble(): Double = Double.fromBits(loadLong())
-            fun Pointer.storeFloat(value: Float) {{ storeInt(value.toRawBits()) }}
-            fun Pointer.storeDouble(value: Double) {{ storeLong(value.toRawBits()) }}
-
-            internal object RepTable {{
-                private val list = mutableListOf<Any>();
-                private var firstVacant: Int? = null
-                private data class Vacant(var next: Int?)
-
-                fun add(v: Any): Int {{
-                    val rep: Int
-                    if (firstVacant != null) {{
-                        rep = firstVacant!!
-                        firstVacant = (list[rep] as Vacant).next
-                        list[rep] = v
-                    }} else {{
-                        rep = list.size
-                        list += v;
-                    }}
-                    return rep
-                }}
-
-                fun get(rep: Int): Any {{
-                    check(list[rep] !is Vacant)
-                    return list[rep];
-                }}
-
-                fun remove(rep: Int): Any {{
-                    val v = get(rep)
-                    list[rep] = Vacant(firstVacant)
-                    firstVacant = rep
-                    return v
-                }}
-
-                override fun toString(): String {{
-                    return \"RepTable(firstVacant=${{firstVacant}}, list = $list)\"
-                }}
-            }}
-
-            // Annotations
-            annotation class WitInterface(val package_: String)
-            annotation class WitImport
-            "
-            );
-
-            let mut tuple_counts = Vec::from_iter(&self.tuple_counts);
-            tuple_counts.sort();
-
-            for tup_size in tuple_counts {
-                uwrite!(support_kt_str, "data class Tuple{tup_size}<");
-                for i in 0..*tup_size {
-                    uwrite!(support_kt_str, "T{i},");
-                }
-                uwrite!(support_kt_str, ">(");
-                for i in 0..*tup_size {
-                    uwrite!(support_kt_str, "val f{i}: T{i},");
-                }
-                uwriteln!(support_kt_str, ")");
-            }
-            files.push("ComponentSupport.kt", support_kt_str.as_bytes());
-        };
-        write_component_support_kt();
-
         let mut kt_str = Source::default();
         wit_bindgen_core::generated_preamble(&mut kt_str, version);
 
@@ -606,6 +485,128 @@ impl WorldGenerator for Kotlin {
         private_kt_str.push_str(&self.private_src);
         files.push(&format!("Internal{snake}.kt"), private_kt_str.as_bytes());
 
+        
+        let mut write_component_support_kt = ||{
+            let mut support_kt_str = Source::default();
+
+            wit_bindgen_core::generated_preamble(&mut support_kt_str, version);
+            uwriteln!(support_kt_str,
+            "
+            {optin_declaration}
+            {custom_kotlin_package_declaration}
+            {custom_kotlin_imports_declaration}
+            {fixed_kotlin_import_declaration}
+            class ComponentException(val value: Any?) : Throwable()
+
+            sealed interface Option<out T> {{
+                data class Some<T2>(val value: T2) : Option<T2>
+                data object None : Option<Nothing>
+            }}
+
+            internal value class ResourceHandle(internal val value: Int)
+
+            @WasmExport
+            fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
+                componentModelRealloc(ptr, oldSize, newSize)
+
+            fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
+                writeToLinearMemory(s.encodeToByteArray()).address.toInt()
+
+            fun STRING_FROM_MEM(addr: Int, len: Int): String =
+                loadByteArray(addr.ptr, len).decodeToString()
+
+            fun MALLOC(size: Int, align: Int): Int = TODO()
+
+            val Int.ptr: Pointer
+                get() = Pointer(this.toUInt())
+
+            fun Pointer.loadUByte(): UByte = loadByte().toUByte()
+            fun Pointer.loadUShort(): UShort = loadShort().toUShort()
+            fun Pointer.loadUInt(): UInt = loadInt().toUInt()
+            fun Pointer.loadULong(): ULong = loadLong().toULong()
+
+            internal fun MemoryAllocator.writeToLinearMemory(value: String): Pointer =
+                writeToLinearMemory(value.encodeToByteArray())
+
+            internal fun loadString(addr: Pointer, size: Int): String =
+                loadByteArray(addr, size).decodeToString()
+            internal fun loadByteArray(addr: Pointer, size: Int): ByteArray =
+                ByteArray(size) {{ i -> (addr + i).loadByte() }}
+            internal fun MemoryAllocator.writeToLinearMemory(array: ByteArray): Pointer {{
+                val pointer = allocate(array.size)
+                var currentPointer = pointer
+                array.forEach {{
+                    currentPointer.storeByte(it)
+                    currentPointer += 1
+                }}
+                return pointer
+            }}
+
+
+            fun Pointer.loadFloat(): Float = Float.fromBits(loadInt())
+            fun Pointer.loadDouble(): Double = Double.fromBits(loadLong())
+            fun Pointer.storeFloat(value: Float) {{ storeInt(value.toRawBits()) }}
+            fun Pointer.storeDouble(value: Double) {{ storeLong(value.toRawBits()) }}
+
+            internal object RepTable {{
+                private val list = mutableListOf<Any>();
+                private var firstVacant: Int? = null
+                private data class Vacant(var next: Int?)
+
+                fun add(v: Any): Int {{
+                    val rep: Int
+                    if (firstVacant != null) {{
+                        rep = firstVacant!!
+                        firstVacant = (list[rep] as Vacant).next
+                        list[rep] = v
+                    }} else {{
+                        rep = list.size
+                        list += v;
+                    }}
+                    return rep
+                }}
+
+                fun get(rep: Int): Any {{
+                    check(list[rep] !is Vacant)
+                    return list[rep];
+                }}
+
+                fun remove(rep: Int): Any {{
+                    val v = get(rep)
+                    list[rep] = Vacant(firstVacant)
+                    firstVacant = rep
+                    return v
+                }}
+
+                override fun toString(): String {{
+                    return \"RepTable(firstVacant=${{firstVacant}}, list = $list)\"
+                }}
+            }}
+
+            // Annotations
+            annotation class WitInterface(val package_: String)
+            annotation class WitImport
+            "
+            );
+
+            let mut tuple_counts = Vec::from_iter(&self.tuple_counts);
+            tuple_counts.sort();
+
+            for tup_size in tuple_counts {
+                uwrite!(support_kt_str, "data class Tuple{tup_size}<");
+                for i in 0..*tup_size {
+                    uwrite!(support_kt_str, "T{i},");
+                }
+                uwrite!(support_kt_str, ">(");
+                for i in 0..*tup_size {
+                    uwrite!(support_kt_str, "val f{i}: T{i},");
+                }
+                uwriteln!(support_kt_str, ")");
+            }
+            files.push("ComponentSupport.kt", support_kt_str.as_bytes());
+        };
+        write_component_support_kt();
+        
         if self.opts.generate_stubs {
             let mut stubs_kt = Source::default();
             wit_bindgen_core::generated_preamble(&mut stubs_kt, version);
