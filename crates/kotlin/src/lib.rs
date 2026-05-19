@@ -1107,7 +1107,11 @@ impl InterfaceGenerator<'_> {
                             // this uses an unqualified name, and relies on opts.kotlin_imports to import the correct packages
                             uwrite!(dst, "{kotlin_name}Impl.");  // Exported resources live only in Implementation namespace
                         } else {
-                            uwrite!(dst, "{kotlin_name}.");
+                            uwrite!(
+                                dst,
+                                "{}.{kotlin_name}.",
+                                self.r#gen.opts.kotlin_package_name
+                            );
                         }
                     }
                     TypeOwner::World(_) => {
