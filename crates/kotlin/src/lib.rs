@@ -133,7 +133,7 @@ impl From<InterfaceNameInfo> for ReferencedMaybeAnonymousInterface {
 
 #[derive(Default)]
 struct GenerationPlan {
-    interfaces: HashMap<ReferencedNonAnonymousInterface, OutsideKind>,
+    interfaces: IndexMap<ReferencedNonAnonymousInterface, OutsideKind>,
     // the same in-place function cannot be declared imported and exported at the same time, so just tracking them without being able to retrieve them easily is enough
     in_place_funcs: Vec<(String, Function, OutsideKind)>,
 }
