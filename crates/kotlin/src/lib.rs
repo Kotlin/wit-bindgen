@@ -182,6 +182,12 @@ pub struct Opts {
 }
 
 impl Opts {
+    pub const SUPPORT_KT_SUBPACKAGE: &str = "runtime";
+
+    pub fn support_package_fqn(&self, unqualified_name:&str) -> String {
+        format!("{}.{}.{}", self.kotlin_package_name, Opts::SUPPORT_KT_SUBPACKAGE, unqualified_name)
+    }
+
     pub fn build(&self) -> Box<dyn WorldGenerator> {
         let mut r = Kotlin::default();
         r.opts = self.clone();
@@ -313,9 +319,8 @@ impl WorldGenerator for Kotlin {
 
         let version = env!("CARGO_PKG_VERSION");
 
+        let support_kt_package = format!("{}.{}", self.opts.kotlin_package_name, Opts::SUPPORT_KT_SUBPACKAGE);
         let optin_declaration = "@file:OptIn(kotlin.wasm.unsafe.UnsafeWasmMemoryApi::class, kotlin.wasm.ExperimentalWasmInterop::class, kotlin.wasm.unsafe.ComponentModelInternalApi::class)\n";
-        let fixed_kotlin_import_declaration = "\
-            ";
         let custom_kotlin_package_declaration = format!("package {}\n", self.opts.kotlin_package_name);
         let custom_kotlin_imports_declaration = {
             // TODO maybe do backticks for package name?
@@ -342,7 +347,7 @@ impl WorldGenerator for Kotlin {
             {optin_declaration}
             {custom_kotlin_package_declaration}
             {custom_kotlin_imports_declaration}
-            {fixed_kotlin_import_declaration}
+            import {support_kt_package}.*
             "
         );
 
@@ -492,46 +497,48 @@ impl WorldGenerator for Kotlin {
             uwriteln!(support_kt_str,
             "
             {optin_declaration}
-            {custom_kotlin_package_declaration}
+            // NOTE: package name not finalized!
+            package {support_kt_package}
             {custom_kotlin_imports_declaration}
-            {fixed_kotlin_import_declaration}
-            class ComponentException(val value: kotlin.Any?) : kotlin.Throwable()
+            import kotlin.wasm.unsafe.*
+
+            class ComponentException(val value: Any?) : Throwable()
 
             sealed interface Option<out T> {{
                 data class Some<T2>(val value: T2) : Option<T2>
-                data object None : Option<kotlin.Nothing>
+                data object None : Option<Nothing>
             }}
 
-            internal value class ResourceHandle(internal val value: kotlin.Int)
+            internal value class ResourceHandle(internal val value: Int)
 
-            @kotlin.wasm.WasmExport
-            fun cabi_realloc(ptr: kotlin.Int, oldSize: kotlin.Int, align: kotlin.Int, newSize: kotlin.Int): kotlin.Int =
-                kotlin.wasm.unsafe.componentModelRealloc(ptr, oldSize, newSize)
+            @WasmExport
+            fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
+                componentModelRealloc(ptr, oldSize, newSize)
 
-            fun kotlin.wasm.unsafe.MemoryAllocator.STRING_TO_MEM(s: kotlin.String): kotlin.Int =
+            fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
                 writeToLinearMemory(s.encodeToByteArray()).address.toInt()
 
-            fun STRING_FROM_MEM(addr: kotlin.Int, len: kotlin.Int): kotlin.String =
+            fun STRING_FROM_MEM(addr: Int, len: Int): String =
                 loadByteArray(addr.ptr, len).decodeToString()
 
-            fun MALLOC(size: kotlin.Int, align: kotlin.Int): kotlin.Int = TODO()
+            fun MALLOC(size: Int, align: Int): Int = TODO()
 
-            val kotlin.Int.ptr: kotlin.wasm.unsafe.Pointer
-                get() = kotlin.wasm.unsafe.Pointer(this.toUInt())
+            val Int.ptr: Pointer
+                get() = Pointer(this.toUInt())
 
-            fun kotlin.wasm.unsafe.Pointer.loadUByte(): kotlin.UByte = loadByte().toUByte()
-            fun kotlin.wasm.unsafe.Pointer.loadUShort(): kotlin.UShort = loadShort().toUShort()
-            fun kotlin.wasm.unsafe.Pointer.loadUInt(): kotlin.UInt = loadInt().toUInt()
-            fun kotlin.wasm.unsafe.Pointer.loadULong(): kotlin.ULong = loadLong().toULong()
+            fun Pointer.loadUByte(): UByte = loadByte().toUByte()
+            fun Pointer.loadUShort(): UShort = loadShort().toUShort()
+            fun Pointer.loadUInt(): UInt = loadInt().toUInt()
+            fun Pointer.loadULong(): ULong = loadLong().toULong()
 
-            internal fun kotlin.wasm.unsafe.MemoryAllocator.writeToLinearMemory(value: kotlin.String): kotlin.wasm.unsafe.Pointer =
+            internal fun MemoryAllocator.writeToLinearMemory(value: String): Pointer =
                 writeToLinearMemory(value.encodeToByteArray())
 
-            internal fun loadString(addr: kotlin.wasm.unsafe.Pointer, size: kotlin.Int): kotlin.String =
+            internal fun loadString(addr: Pointer, size: Int): String =
                 loadByteArray(addr, size).decodeToString()
-            internal fun loadByteArray(addr: kotlin.wasm.unsafe.Pointer, size: kotlin.Int): kotlin.ByteArray =
-                kotlin.ByteArray(size) {{ i -> (addr + i).loadByte() }}
-            internal fun kotlin.wasm.unsafe.MemoryAllocator.writeToLinearMemory(array: kotlin.ByteArray): kotlin.wasm.unsafe.Pointer {{
+            internal fun loadByteArray(addr: Pointer, size: Int): ByteArray =
+                ByteArray(size) {{ i -> (addr + i).loadByte() }}
+            internal fun MemoryAllocator.writeToLinearMemory(array: ByteArray): Pointer {{
                 val pointer = allocate(array.size)
                 var currentPointer = pointer
                 array.forEach {{
@@ -542,18 +549,18 @@ impl WorldGenerator for Kotlin {
             }}
 
 
-            fun kotlin.wasm.unsafe.Pointer.loadFloat(): kotlin.Float = kotlin.Float.fromBits(loadInt())
-            fun kotlin.wasm.unsafe.Pointer.loadDouble(): kotlin.Double = kotlin.Double.fromBits(loadLong())
-            fun kotlin.wasm.unsafe.Pointer.storeFloat(value: kotlin.Float) {{ storeInt(value.toRawBits()) }}
-            fun kotlin.wasm.unsafe.Pointer.storeDouble(value: kotlin.Double) {{ storeLong(value.toRawBits()) }}
+            fun Pointer.loadFloat(): Float = Float.fromBits(loadInt())
+            fun Pointer.loadDouble(): Double = Double.fromBits(loadLong())
+            fun Pointer.storeFloat(value: Float) {{ storeInt(value.toRawBits()) }}
+            fun Pointer.storeDouble(value: Double) {{ storeLong(value.toRawBits()) }}
 
             internal object RepTable {{
-                private val list = kotlin.collections.mutableListOf<kotlin.Any>();
-                private var firstVacant: kotlin.Int? = null
-                private data class Vacant(var next: kotlin.Int?)
+                private val list = mutableListOf<Any>();
+                private var firstVacant: Int? = null
+                private data class Vacant(var next: Int?)
 
-                fun add(v: kotlin.Any): kotlin.Int {{
-                    val rep: kotlin.Int
+                fun add(v: Any): Int {{
+                    val rep: Int
                     if (firstVacant != null) {{
                         rep = firstVacant!!
                         firstVacant = (list[rep] as Vacant).next
@@ -565,25 +572,25 @@ impl WorldGenerator for Kotlin {
                     return rep
                 }}
 
-                fun get(rep: kotlin.Int): kotlin.Any {{
+                fun get(rep: Int): Any {{
                     check(list[rep] !is Vacant)
                     return list[rep];
                 }}
 
-                fun remove(rep: kotlin.Int): kotlin.Any {{
+                fun remove(rep: Int): Any {{
                     val v = get(rep)
                     list[rep] = Vacant(firstVacant)
                     firstVacant = rep
                     return v
                 }}
 
-                override fun toString(): kotlin.String {{
+                override fun toString(): String {{
                     return \"RepTable(firstVacant=${{firstVacant}}, list = $list)\"
                 }}
             }}
 
             // Annotations
-            annotation class WitInterface(val package_: kotlin.String)
+            annotation class WitInterface(val package_: String)
             annotation class WitImport
             "
             );
@@ -602,7 +609,7 @@ impl WorldGenerator for Kotlin {
                 }
                 uwriteln!(support_kt_str, ")");
             }
-            files.push("ComponentSupport.kt", support_kt_str.as_bytes());
+            files.push(format!("{}/ComponentSupport.kt", Opts::SUPPORT_KT_SUBPACKAGE).as_str(), support_kt_str.as_bytes());
         };
         write_component_support_kt();
         
@@ -810,16 +817,16 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         uwriteln!(self.src, "class {camel} : kotlin.AutoCloseable {{");
         uwriteln!(
             self.src,
-            "internal var __handle: {}.ResourceHandle = {0}.ResourceHandle(0)",
-            self.r#gen.opts.kotlin_package_name
+            "internal var __handle: {} = {0}(0)",
+            self.r#gen.opts.support_package_fqn("ResourceHandle")
         );
 
         if self.outside_kind.is_imported() {
             // Exported constructor handle
             uwriteln!(
                 self.src,
-                "internal constructor(handle: {}.ResourceHandle) {{ __handle = handle }}",
-                self.r#gen.opts.kotlin_package_name
+                "internal constructor(handle: {}) {{ __handle = handle }}",
+                self.r#gen.opts.support_package_fqn("ResourceHandle")
             );
         }
 
@@ -1228,7 +1235,7 @@ impl InterfaceGenerator<'_> {
 
         if let FunctionKind::Constructor(_) = func.kind {
             // IIFE in primary construct call
-            uwrite!(self.src, ": this({}.ResourceHandle(run(fun (): kotlin.Int", self.r#gen.opts.kotlin_package_name);
+            uwrite!(self.src, ": this({}(run(fun (): kotlin.Int", self.r#gen.opts.support_package_fqn("ResourceHandle"));
         }
         self.src.push_str(" {\n");
         self.src.push_str("// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Canonical ABI Adapter Code\">\n");
@@ -1507,6 +1514,10 @@ impl Bindgen for FunctionBindgen<'_, '_> {
         operands: &mut Vec<String>,
         results: &mut Vec<String>,
     ) {
+        let resource_handle_fqn = self.r#gen.r#gen.opts.support_package_fqn("ResourceHandle");
+        let rep_table_fqn = self.r#gen.r#gen.opts.support_package_fqn("RepTable");
+        let component_exception_fqn = self.r#gen.r#gen.opts.support_package_fqn("ComponentException");
+
         match inst {
             Instruction::GetArg { nth } => results.push(self.params[*nth].clone()),
             Instruction::I32Const { val } => results.push(val.to_string()),
@@ -1647,19 +1658,17 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     uwriteln!(
                         self.src,
                         "if ({handle} == 0) {{
-                             var {local_rep} = {}.RepTable.add({op});
+                             var {local_rep} = {rep_table_fqn}({op});
                              {handle} = {imported_function_prefix}_new({local_rep});
                          }}
                          ",
-                         self.r#gen.r#gen.opts.kotlin_package_name
                     );
                 }
 
                 if is_own {
                     uwriteln!(
                         self.src,
-                        "{op}.__handle = {}.ResourceHandle(0);",
-                        self.r#gen.r#gen.opts.kotlin_package_name
+                        "{op}.__handle = {resource_handle_fqn}(0);",
                     );
                 }
 
@@ -1679,16 +1688,14 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 if is_exported {
                     if is_own {
                         uwriteln!(self.src,
-                            "val {resource} = {}.RepTable.get({imported_function_prefix}_rep({op})) as {resource_type_name}
-                                 {resource}.__handle = {0}.ResourceHandle({op})
+                            "val {resource} = {rep_table_fqn}.get({imported_function_prefix}_rep({op})) as {resource_type_name}
+                                 {resource}.__handle = {resource_handle_fqn}({op})
                             ",
-                            self.r#gen.r#gen.opts.kotlin_package_name
                         );
                     } else {
                         uwriteln!(
                             self.src,
-                            "val {resource} = {}.RepTable.get({op}) as {resource_type_name}",
-                            self.r#gen.r#gen.opts.kotlin_package_name
+                            "val {resource} = {rep_table_fqn}.get({op}) as {resource_type_name}",
                         );
                     }
                 } else {
@@ -1699,8 +1706,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     } else {
                         uwriteln!(
                             self.src,
-                            "val {resource} = {resource_type_name}({}.ResourceHandle({op}))",
-                            self.r#gen.r#gen.opts.kotlin_package_name
+                            "val {resource} = {resource_type_name}({resource_handle_fqn}({op}))",
                         )
                         // TODO: Drop this resource at the end of the function
                     }
@@ -1960,8 +1966,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let bind_err = if let Some(err_ty) = &result.err {
                     let err_kt_ty_name = self.r#gen.type_name(err_ty);
                     format!(
-                        "val {err_payload} = ({op0}.exceptionOrNull() as {}.ComponentException).value as {err_kt_ty_name}\n",
-                        self.r#gen.r#gen.opts.kotlin_package_name
+                        "val {err_payload} = ({op0}.exceptionOrNull() as {component_exception_fqn}).value as {err_kt_ty_name}\n",
                     )
                 } else {
                     String::new()
@@ -2010,15 +2015,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
                 let err_result = if let Some(_) = result.err.as_ref() {
                     let err_result = &err_results[0];
-                    format!(
-                        "kotlin.Result.failure{type_arguments}({}.ComponentException({err_result}))",
-                        self.r#gen.r#gen.opts.kotlin_package_name
-                    )
+                    format!("kotlin.Result.failure{type_arguments}({component_exception_fqn}({err_result}))")
                 } else {
-                    format!(
-                        "kotlin.Result.failure{type_arguments}({}.ComponentException(kotlin.Unit))",
-                        self.r#gen.r#gen.opts.kotlin_package_name
-                    )
+                    format!("kotlin.Result.failure{type_arguments}({component_exception_fqn}(kotlin.Unit))")
                 };
 
                 uwriteln!(
@@ -2066,8 +2065,8 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let ptr = &operands[0];
                 let len = &operands[1];
                 results.push(format!(
-                    "{}.STRING_FROM_MEM({ptr}, {len})",
-                    self.r#gen.r#gen.opts.kotlin_package_name
+                    "{}({ptr}, {len})",
+                    self.r#gen.r#gen.opts.support_package_fqn("STRING_FROM_MEM")
                 ));
             }
 
