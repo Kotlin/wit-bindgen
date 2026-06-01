@@ -616,7 +616,8 @@ impl WorldGenerator for Kotlin {
         if self.opts.generate_stubs {
             let mut stubs_kt = Source::default();
             wit_bindgen_core::generated_preamble(&mut stubs_kt, version);
-            // TODO package/imports for export stubs implementation. Maybe just use same, because outddir is same anyway?
+            // TODO consider different package & outdir for export stubs
+            stubs_kt.push_str(&format!("package {}\n\n", self.opts.kotlin_package_name));
             stubs_kt.push_str(&self.export_stubs_src);
             files.push(&format!("{snake}Impl.kt"), stubs_kt.as_bytes());
         }
