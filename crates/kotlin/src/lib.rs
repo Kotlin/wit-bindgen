@@ -1,18 +1,21 @@
 use anyhow::Result;
 use heck::*;
 use std::collections::{HashMap, HashSet};
-use std::fmt::{format, Write};
+use std::fmt::{Write, format};
 use std::hash::{Hash, Hasher};
 use std::mem;
-use wit_component::TypeKind;
 use wit_bindgen_core::abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType};
-use wit_bindgen_core::{dealias, uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns, Source, WorldGenerator};
+use wit_bindgen_core::{
+    Direction, Files, InterfaceGenerator as _, Ns, Source, WorldGenerator, dealias, uwrite,
+    uwriteln, wit_parser::*,
+};
+use wit_component::TypeKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum OutsideKind {
     Imported,
     Exported,
-    Both
+    Both,
 }
 
 impl OutsideKind {
@@ -50,7 +53,7 @@ impl OutsideKind {
 struct InterfaceNameInfo {
     /// fully qualified wit interface name, i.e. with package and version
     fq_wit_name: String,
-    kotlin_name: String
+    kotlin_name: String,
 }
 
 // NOTE: The following complicated machinery is to deal with the problem that interface references
@@ -102,11 +105,21 @@ impl PartialEq<Self> for ReferencedNonAnonymousInterface {
 }
 
 impl ReferencedNonAnonymousInterface {
-    fn create_unified_referenced_interface_name(resolve: &Resolve, world_key: &WorldKey, id: InterfaceId) -> Self {
+    fn create_unified_referenced_interface_name(
+        resolve: &Resolve,
+        world_key: &WorldKey,
+        id: InterfaceId,
+    ) -> Self {
         let kotlin_name = kotlin_interface_name_from_world_key(resolve, &world_key);
         let fq_wit_name = resolve.name_world_key(&world_key);
         let id = unify_interface_id_by_package(resolve, id);
-        ReferencedInterface{ name_info: InterfaceNameInfo { kotlin_name, fq_wit_name }, id }
+        ReferencedInterface {
+            name_info: InterfaceNameInfo {
+                kotlin_name,
+                fq_wit_name,
+            },
+            id,
+        }
     }
 }
 
@@ -184,8 +197,13 @@ pub struct Opts {
 impl Opts {
     pub const SUPPORT_KT_SUBPACKAGE: &str = "runtime";
 
-    pub fn support_package_fqn(&self, unqualified_name:&str) -> String {
-        format!("{}.{}.{}", self.kotlin_package_name, Opts::SUPPORT_KT_SUBPACKAGE, unqualified_name)
+    pub fn support_package_fqn(&self, unqualified_name: &str) -> String {
+        format!(
+            "{}.{}.{}",
+            self.kotlin_package_name,
+            Opts::SUPPORT_KT_SUBPACKAGE,
+            unqualified_name
+        )
     }
 
     pub fn build(&self) -> Box<dyn WorldGenerator> {
@@ -210,12 +228,18 @@ impl WorldGenerator for Kotlin {
         id: InterfaceId,
         _files: &mut Files,
     ) -> Result<()> {
-        let referenced_interface = ReferencedInterface::create_unified_referenced_interface_name(resolve, name, id);
+        let referenced_interface =
+            ReferencedInterface::create_unified_referenced_interface_name(resolve, name, id);
 
-        self.interface_kotlin_names.insert(referenced_interface.id, referenced_interface.name_info.kotlin_name.clone());
+        self.interface_kotlin_names.insert(
+            referenced_interface.id,
+            referenced_interface.name_info.kotlin_name.clone(),
+        );
 
         // if it doesn't exist: create it as an import; if it exists: also import it
-        self.generation_plan.interfaces.entry(referenced_interface)
+        self.generation_plan
+            .interfaces
+            .entry(referenced_interface)
             .and_modify(|kind| *kind = kind.also_import())
             .or_insert(OutsideKind::Imported);
 
@@ -229,11 +253,17 @@ impl WorldGenerator for Kotlin {
         id: InterfaceId,
         _files: &mut Files,
     ) -> Result<()> {
-        let referenced_interface = ReferencedInterface::create_unified_referenced_interface_name(resolve, name, id);
+        let referenced_interface =
+            ReferencedInterface::create_unified_referenced_interface_name(resolve, name, id);
 
-        self.interface_kotlin_names.insert(referenced_interface.id, referenced_interface.name_info.kotlin_name.clone());
+        self.interface_kotlin_names.insert(
+            referenced_interface.id,
+            referenced_interface.name_info.kotlin_name.clone(),
+        );
 
-        self.generation_plan.interfaces.entry(referenced_interface)
+        self.generation_plan
+            .interfaces
+            .entry(referenced_interface)
             .and_modify(|kind| *kind = kind.also_export())
             .or_insert(OutsideKind::Exported);
 
@@ -253,7 +283,11 @@ impl WorldGenerator for Kotlin {
             // only add in place funcs if they're freestanding, otherwise they are part of a resource
 
             if func.kind == FunctionKind::Freestanding {
-                self.generation_plan.in_place_funcs.push((name.to_string(), (*func).clone(), OutsideKind::Imported));
+                self.generation_plan.in_place_funcs.push((
+                    name.to_string(),
+                    (*func).clone(),
+                    OutsideKind::Imported,
+                ));
             }
         }
     }
@@ -271,7 +305,11 @@ impl WorldGenerator for Kotlin {
             // see import_funcs for explanation
 
             if func.kind == FunctionKind::Freestanding {
-                self.generation_plan.in_place_funcs.push((name.to_string(), (*func).clone(), OutsideKind::Exported));
+                self.generation_plan.in_place_funcs.push((
+                    name.to_string(),
+                    (*func).clone(),
+                    OutsideKind::Exported,
+                ));
             }
         }
         // if generate_stubs {
@@ -297,9 +335,9 @@ impl WorldGenerator for Kotlin {
         types: &[(&str, TypeId)],
         _files: &mut Files,
     ) {
-        let referenced_interface = ReferencedMaybeAnonymousInterface{
+        let referenced_interface = ReferencedMaybeAnonymousInterface {
             id: None,
-            name_info: interface_name_from_world_name(resolve, world)
+            name_info: interface_name_from_world_name(resolve, world),
         };
         let mut r#gen = self.interface(resolve, OutsideKind::Imported, referenced_interface);
         for (name, ty) in types {
@@ -309,8 +347,16 @@ impl WorldGenerator for Kotlin {
 
         // push to raw string, instead of to source, to avoid reindenting
         r#gen.r#gen.src.as_mut_string().push_str(&r#gen.src);
-        r#gen.r#gen.private_src.as_mut_string().push_str(&r#gen.private_top_level_src);
-        r#gen.r#gen.export_stubs_src.as_mut_string().push_str(&r#gen.export_stubs_src);
+        r#gen
+            .r#gen
+            .private_src
+            .as_mut_string()
+            .push_str(&r#gen.private_top_level_src);
+        r#gen
+            .r#gen
+            .export_stubs_src
+            .as_mut_string()
+            .push_str(&r#gen.export_stubs_src);
     }
 
     fn finish(&mut self, resolve: &Resolve, id: WorldId, files: &mut Files) -> Result<()> {
@@ -319,9 +365,14 @@ impl WorldGenerator for Kotlin {
 
         let version = env!("CARGO_PKG_VERSION");
 
-        let support_kt_package = format!("{}.{}", self.opts.kotlin_package_name, Opts::SUPPORT_KT_SUBPACKAGE);
+        let support_kt_package = format!(
+            "{}.{}",
+            self.opts.kotlin_package_name,
+            Opts::SUPPORT_KT_SUBPACKAGE
+        );
         let optin_declaration = "@file:OptIn(kotlin.wasm.unsafe.UnsafeWasmMemoryApi::class, kotlin.wasm.ExperimentalWasmInterop::class, kotlin.wasm.unsafe.ComponentModelInternalApi::class)\n";
-        let custom_kotlin_package_declaration = format!("package {}\n", self.opts.kotlin_package_name);
+        let custom_kotlin_package_declaration =
+            format!("package {}\n", self.opts.kotlin_package_name);
         let custom_kotlin_imports_declaration = {
             // TODO maybe do backticks for package name?
             let mut kotlin_imports = String::new();
@@ -342,7 +393,8 @@ impl WorldGenerator for Kotlin {
         let mut kt_str = Source::default();
         wit_bindgen_core::generated_preamble(&mut kt_str, version);
 
-        uwriteln!(kt_str,
+        uwriteln!(
+            kt_str,
             "
             {optin_declaration}
             {custom_kotlin_package_declaration}
@@ -350,7 +402,6 @@ impl WorldGenerator for Kotlin {
             import {support_kt_package}.*
             "
         );
-
 
         // move generation plan out, so that we don't borrow from self twice
         let mut generation_plan = mem::take(&mut self.generation_plan);
@@ -361,18 +412,30 @@ impl WorldGenerator for Kotlin {
 
         if generation_plan.in_place_funcs.len() > 0 {
             // sort them, to do imports first, then exports
-            generation_plan.in_place_funcs.sort_by_key(|(_, _, kind)| kind.is_exported());
+            generation_plan
+                .in_place_funcs
+                .sort_by_key(|(_, _, kind)| kind.is_exported());
 
             // we already know there's at least one interface function, so first()/last() exists
             // -> if the first one is exported, then there are no imports
             // -> if the last one is imported, then there are no exports
 
-            let any_world_level_function_imports = !generation_plan.in_place_funcs.first().unwrap().2.is_exported();
-            let any_world_level_function_exports = !generation_plan.in_place_funcs.last().unwrap().2.is_imported();
+            let any_world_level_function_imports = !generation_plan
+                .in_place_funcs
+                .first()
+                .unwrap()
+                .2
+                .is_exported();
+            let any_world_level_function_exports = !generation_plan
+                .in_place_funcs
+                .last()
+                .unwrap()
+                .2
+                .is_imported();
 
-            let interface_name_for_world = interface_name_from_world_name(resolve, self.world_id.unwrap());
+            let interface_name_for_world =
+                interface_name_from_world_name(resolve, self.world_id.unwrap());
             let kotlin_interface_name_for_world = interface_name_for_world.kotlin_name.as_str();
-
 
             // Two interfaces, inside an outer interface
             // - the outer interface should contain types, etc., so we actually need 3 separate interface generators
@@ -383,32 +446,49 @@ impl WorldGenerator for Kotlin {
             //       This is more important for the actual @WasmImport/@WasmExport annotations below
             //       The backslash just serves to escape it as a kotlin string, to prevent interpolation
             self.src.push_str("\n@WitInterface(\"\\$root\")\n");
-            self.src.push_str(format!("/*external */interface {kotlin_interface_name_for_world} {{\n").as_str());
+            self.src.push_str(
+                format!("/*external */interface {kotlin_interface_name_for_world} {{\n").as_str(),
+            );
 
             // let mut r#gen_world = self.interface(resolve, OutsideKind::Imported, ReferencedMaybeAnonymousInterface::from(interface_name_for_world));
 
             let mut iterator = generation_plan.in_place_funcs.iter().peekable();
             // TODO figure out fq wit name, doesn't really exist for this case...
 
-
             {
                 let mut declarations_buf = String::new();
 
                 // TODO figure out kotlin names, might just be Imports, without the prefix
                 // NOTE: see import section above for $root explanation
-                let mut r#gen_imports = self.interface(resolve, OutsideKind::Imported, ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo { fq_wit_name: "\\$root".to_string(), kotlin_name: format!("{kotlin_interface_name_for_world}.Imports") }));
+                let mut r#gen_imports = self.interface(
+                    resolve,
+                    OutsideKind::Imported,
+                    ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo {
+                        fq_wit_name: "\\$root".to_string(),
+                        kotlin_name: format!("{kotlin_interface_name_for_world}.Imports"),
+                    }),
+                );
 
                 // because we're inside an outer interface, increase indent manually
                 r#gen_imports.src.indent(1);
-                r#gen_imports.src.push_str("@WitImport\ncompanion object Import : Imports {\n");
+                r#gen_imports
+                    .src
+                    .push_str("@WitImport\ncompanion object Import : Imports {\n");
 
-                while let Some((_, function, kind)) = iterator.peek() && kind.is_imported() {
+                while let Some((_, function, kind)) = iterator.peek()
+                    && kind.is_imported()
+                {
                     // only peek, so that the following loop can consume the same function again, if it's an export
                     iterator.next();
 
-                    let private_src_imported_fn_name = r#gen_imports.push_import_private_src_impl(function);
+                    let private_src_imported_fn_name =
+                        r#gen_imports.push_import_private_src_impl(function);
 
-                    r#gen_imports.push_import_adapter_impl(&function, true, &private_src_imported_fn_name);
+                    r#gen_imports.push_import_adapter_impl(
+                        &function,
+                        true,
+                        &private_src_imported_fn_name,
+                    );
                     // at the same time, collect the signatures to append them to the interface definition later
                     let kotlin_sig = r#gen_imports.kotlin_signature(function, false, false);
 
@@ -432,12 +512,21 @@ impl WorldGenerator for Kotlin {
 
                 // TODO can't use the .Exports suffix as the name, because we can't re-open the interface to declare the object as part of it later
                 // NOTE: see import section above for $root explanation
-                let mut r#gen_exports = self.interface(resolve, OutsideKind::Exported, ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo{fq_wit_name: "\\$root".to_string(), kotlin_name: format!("{kotlin_interface_name_for_world}Exports") }));
+                let mut r#gen_exports = self.interface(
+                    resolve,
+                    OutsideKind::Exported,
+                    ReferencedMaybeAnonymousInterface::from(InterfaceNameInfo {
+                        fq_wit_name: "\\$root".to_string(),
+                        kotlin_name: format!("{kotlin_interface_name_for_world}Exports"),
+                    }),
+                );
 
                 // because we're inside an outer interface, increase indent manually
                 r#gen_exports.src.indent(1);
 
-                while let Some((_, function, kind)) = iterator.next() && kind.is_exported() {
+                while let Some((_, function, kind)) = iterator.next()
+                    && kind.is_exported()
+                {
                     r#gen_exports.push_export_stubs_and_private_src_impl(function);
                     // at the same time, collect the signatures to append them to the interface definition later
                     let kotlin_sig = r#gen_exports.kotlin_signature(function, false, false);
@@ -460,13 +549,14 @@ impl WorldGenerator for Kotlin {
 
                     self.src.as_mut_string().push_str(src);
                     self.private_src.as_mut_string().push_str(private_src);
-                    self.export_stubs_src.as_mut_string().push_str(export_stubs_src);
+                    self.export_stubs_src
+                        .as_mut_string()
+                        .push_str(export_stubs_src);
                     // TODO check export stubs for this case
                 }
 
                 self.src.push_str("}\n");
             }
-
         }
 
         // just push to the string itself, because we don't want re-indenting of what's in src
@@ -478,7 +568,8 @@ impl WorldGenerator for Kotlin {
         let mut private_kt_str = Source::default();
         wit_bindgen_core::generated_preamble(&mut private_kt_str, version);
 
-        uwriteln!(private_kt_str,
+        uwriteln!(
+            private_kt_str,
             "
             {optin_declaration}
             {custom_kotlin_package_declaration}
@@ -489,13 +580,13 @@ impl WorldGenerator for Kotlin {
         private_kt_str.push_str(&self.private_src);
         files.push(&format!("Internal{snake}.kt"), private_kt_str.as_bytes());
 
-        
-        let mut write_component_support_kt = ||{
+        let mut write_component_support_kt = || {
             let mut support_kt_str = Source::default();
 
             wit_bindgen_core::generated_preamble(&mut support_kt_str, version);
-            uwriteln!(support_kt_str,
-            "
+            uwriteln!(
+                support_kt_str,
+                "
             {optin_declaration}
             // NOTE: package name not finalized!
             package {support_kt_package}
@@ -609,10 +700,13 @@ impl WorldGenerator for Kotlin {
                 }
                 uwriteln!(support_kt_str, ")");
             }
-            files.push(format!("{}/ComponentSupport.kt", Opts::SUPPORT_KT_SUBPACKAGE).as_str(), support_kt_str.as_bytes());
+            files.push(
+                format!("{}/ComponentSupport.kt", Opts::SUPPORT_KT_SUBPACKAGE).as_str(),
+                support_kt_str.as_bytes(),
+            );
         };
         write_component_support_kt();
-        
+
         if self.opts.generate_stubs {
             let mut stubs_kt = Source::default();
             wit_bindgen_core::generated_preamble(&mut stubs_kt, version);
@@ -631,7 +725,7 @@ impl Kotlin {
         &'a mut self,
         resolve: &'a Resolve,
         outside_kind: OutsideKind,
-        referenced_interface: ReferencedMaybeAnonymousInterface
+        referenced_interface: ReferencedMaybeAnonymousInterface,
     ) -> InterfaceGenerator<'a> {
         InterfaceGenerator {
             src: Source::default(),
@@ -644,13 +738,22 @@ impl Kotlin {
         }
     }
 
-    fn import_export_interface(&mut self, resolve: &Resolve, referenced_interface: ReferencedNonAnonymousInterface, outside_kind: OutsideKind){
+    fn import_export_interface(
+        &mut self,
+        resolve: &Resolve,
+        referenced_interface: ReferencedNonAnonymousInterface,
+        outside_kind: OutsideKind,
+    ) {
         let kotlin_name = referenced_interface.name_info.kotlin_name.clone();
         let kotlin_package = self.opts.kotlin_package_name.clone();
 
         let referenced_interface_id = referenced_interface.id;
 
-        let mut r#gen = self.interface(resolve, outside_kind, ReferencedMaybeAnonymousInterface::from(referenced_interface));
+        let mut r#gen = self.interface(
+            resolve,
+            outside_kind,
+            ReferencedMaybeAnonymousInterface::from(referenced_interface),
+        );
 
         // because this will be inside an interface, add one level of indentation
         r#gen.src.indent(1);
@@ -658,7 +761,6 @@ impl Kotlin {
         if outside_kind.is_imported() {
             r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {kotlin_package}.{kotlin_name} {{\n// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Import Code\">\n").as_str());
         }
-
 
         for (_name, func) in resolve.interfaces[referenced_interface_id].functions.iter() {
             // TODO non-freestanding
@@ -675,7 +777,7 @@ impl Kotlin {
             }
         }
 
-        if outside_kind.is_imported()  {
+        if outside_kind.is_imported() {
             r#gen.src.push_str("// </editor-fold>\n}\n");
         }
         r#gen.src.push_str("// START OF TYPES\n\n");
@@ -699,7 +801,7 @@ impl Kotlin {
         // remove the extra level of indentation
         r#gen.src.deindent(1);
 
-        let object_body =  &r#gen.src.as_mut_string();
+        let object_body = &r#gen.src.as_mut_string();
         let private_top_level_body = &r#gen.private_top_level_src.as_mut_string();
         let exports_stubs_body = &r#gen.export_stubs_src.as_mut_string();
 
@@ -707,9 +809,15 @@ impl Kotlin {
 
         // TODO(Kotlin): Naming of exports
         // write to the raw string to avoid reindenting
-        uwriteln!(self.src.as_mut_string(), "@WitInterface(\"{wit_iface_name}\")\n/*external */interface {kotlin_name} {{\n{object_body}\n}}\n");
-        if outside_kind.is_exported(){
-            uwriteln!(self.export_stubs_src, "object {kotlin_name}Impl : {kotlin_name} {{\n{exports_stubs_body}\n}}\n");
+        uwriteln!(
+            self.src.as_mut_string(),
+            "@WitInterface(\"{wit_iface_name}\")\n/*external */interface {kotlin_name} {{\n{object_body}\n}}\n"
+        );
+        if outside_kind.is_exported() {
+            uwriteln!(
+                self.export_stubs_src,
+                "object {kotlin_name}Impl : {kotlin_name} {{\n{exports_stubs_body}\n}}\n"
+            );
         }
 
         // if self.opts.generate_stubs {
@@ -727,7 +835,6 @@ impl Kotlin {
         //     let object_body =  &gen.src.as_mut_string();
         //     uwriteln!(self.export_stubs_src, "object {name}Impl {{\n{object_body}\n}}\n");
         // }
-
 
         uwriteln!(self.private_src, "{private_top_level_body}\n");
     }
@@ -770,9 +877,11 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     }
 
     fn type_resource(&mut self, type_id: TypeId, name: &str, docs: &Docs) {
-
         if self.outside_kind.is_exported() {
-            debug_assert!(!self.outside_kind.is_imported(), "Exported and imported resources unsupported for now");
+            debug_assert!(
+                !self.outside_kind.is_imported(),
+                "Exported and imported resources unsupported for now"
+            );
             // once we support exporting and importing a resource, this r#gen.exported_resources needs to be reworked, because right now (resource !in exported_resources) === (reource imported); which won't hold true then
             self.r#gen.exported_resources.insert(type_id);
         }
@@ -781,7 +890,10 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
         let import_module = self.referenced_interface.name_info.fq_wit_name.clone();
 
-        assert!(self.outside_kind.is_exported() ^ self.outside_kind.is_imported(), "Exported and imported resources unsupported for now");
+        assert!(
+            self.outside_kind.is_exported() ^ self.outside_kind.is_imported(),
+            "Exported and imported resources unsupported for now"
+        );
 
         let import_module = if self.outside_kind.is_imported() {
             import_module
@@ -833,7 +945,10 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
         // TODO: Zero out the handle
         // NOTE: cannot use uwriteln! here, because the way it splits up the arguments messes up indentation (one split ends with '{')
-        self.src.push_str(format!("override fun close() {{ {imported_function_prefix}_drop(__handle.value) }}\n").as_str());
+        self.src.push_str(
+            format!("override fun close() {{ {imported_function_prefix}_drop(__handle.value) }}\n")
+                .as_str(),
+        );
 
         let ty = &self.resolve.types[type_id];
         let mut functions: Vec<&Function> = Vec::new();
@@ -853,7 +968,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
                     }
                 }
             }
-            TypeOwner::None => unimplemented!("Resource without type owner")
+            TypeOwner::None => unimplemented!("Resource without type owner"),
         }
 
         if self.outside_kind.is_exported() {
@@ -864,14 +979,19 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             let mut has_constructor: bool = false;
             for f in &functions {
                 match f.kind {
-                    FunctionKind::Constructor(id) if id == type_id => { has_constructor = true; }
+                    FunctionKind::Constructor(id) if id == type_id => {
+                        has_constructor = true;
+                    }
                     _ => {}
                 }
             }
             // If exported resource doesn't have a constructor, call the primary super constructor
             let maybe_super_constructor_call = if has_constructor { "" } else { "()" };
 
-            uwriteln!(self.export_stubs_src, "class {camel}Impl : {kotlin_name}.{camel}{maybe_super_constructor_call} {{");
+            uwriteln!(
+                self.export_stubs_src,
+                "class {camel}Impl : {kotlin_name}.{camel}{maybe_super_constructor_call} {{"
+            );
         }
 
         // TODO: until we decide on the redesign for resources, it makes little sense to implement importing + exporting the same one yet
@@ -936,7 +1056,8 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         let name = name.to_upper_camel_case();
         self.src.push_str(&name);
         // TODO(Kotlin): Support underlying values smaller than Long
-        self.src.push_str(" internal constructor(val _value: kotlin.Long) {\n");
+        self.src
+            .push_str(" internal constructor(val _value: kotlin.Long) {\n");
         self.src.push_str("constructor(\n");
         for flag in flags.flags.iter() {
             uwrite!(
@@ -1018,7 +1139,14 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     fn type_list(&mut self, _id: TypeId, _name: &str, _ty: &Type, _docs: &Docs) {}
     fn type_builtin(&mut self, _id: TypeId, _name: &str, _ty: &Type, _docs: &Docs) {}
 
-    fn type_fixed_length_list(&mut self, id: TypeId, name: &str, ty: &Type, size: u32, docs: &Docs) {
+    fn type_fixed_length_list(
+        &mut self,
+        id: TypeId,
+        name: &str,
+        ty: &Type,
+        size: u32,
+        docs: &Docs,
+    ) {
         unimplemented!()
     }
 
@@ -1102,7 +1230,9 @@ impl InterfaceGenerator<'_> {
             Type::F64 => dst.push_str("kotlin.Double"),
             Type::String => dst.push_str("kotlin.String"),
             Type::Id(id) => self.push_type_id_name(id, dst),
-            Type::ErrorContext => {unimplemented!()}
+            Type::ErrorContext => {
+                unimplemented!()
+            }
         }
     }
 
@@ -1121,7 +1251,7 @@ impl InterfaceGenerator<'_> {
                         let kotlin_name = &self.r#gen.interface_kotlin_names[ty_interface_id];
                         if is_exported_resource {
                             // this uses an unqualified name, and relies on opts.kotlin_imports to import the correct packages
-                            uwrite!(dst, "{kotlin_name}Impl.");  // Exported resources live only in Implementation namespace
+                            uwrite!(dst, "{kotlin_name}Impl."); // Exported resources live only in Implementation namespace
                         } else {
                             uwrite!(
                                 dst,
@@ -1223,8 +1353,12 @@ impl InterfaceGenerator<'_> {
                 self.push_type_name(&Type::Id(*resource), dst);
             }
             TypeDefKind::Unknown => unreachable!(),
-            TypeDefKind::Map(_, _) => {unimplemented!()}
-            TypeDefKind::FixedLengthList(_, _) => {unimplemented!()}
+            TypeDefKind::Map(_, _) => {
+                unimplemented!()
+            }
+            TypeDefKind::FixedLengthList(_, _) => {
+                unimplemented!()
+            }
         }
     }
 
@@ -1232,18 +1366,29 @@ impl InterfaceGenerator<'_> {
         to_kotlin_identifier(func.item_name())
     }
 
-    fn push_import_adapter_impl(&mut self, func: &&Function, annotate_method_as_override: bool, private_src_imported_fn_name: &String) {
+    fn push_import_adapter_impl(
+        &mut self,
+        func: &&Function,
+        annotate_method_as_override: bool,
+        private_src_imported_fn_name: &String,
+    ) {
         // TODO reconsider whether we want kdoc here
-        self.src.push_str(&self.kotlin_signature(func, true, annotate_method_as_override));
+        self.src
+            .push_str(&self.kotlin_signature(func, true, annotate_method_as_override));
 
         if let FunctionKind::Constructor(_) = func.kind {
             // IIFE in primary construct call
-            uwrite!(self.src, ": this({}(run(fun (): kotlin.Int", self.r#gen.opts.support_package_fqn("ResourceHandle"));
+            uwrite!(
+                self.src,
+                ": this({}(run(fun (): kotlin.Int",
+                self.r#gen.opts.support_package_fqn("ResourceHandle")
+            );
         }
         self.src.push_str(" {\n");
         self.src.push_str("// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Canonical ABI Adapter Code\">\n");
 
-        self.src.push_str("kotlin.wasm.unsafe.withScopedMemoryAllocator { allocator ->\n");
+        self.src
+            .push_str("kotlin.wasm.unsafe.withScopedMemoryAllocator { allocator ->\n");
         // because the line doesn't perfectly end with a {, need to manually increase the indent
         self.src.indent(1);
 
@@ -1267,10 +1412,7 @@ impl InterfaceGenerator<'_> {
             func.kind.is_async(), // TODO async not supported yet
         );
 
-        let FunctionBindgen {
-            src,
-            ..
-        } = f;
+        let FunctionBindgen { src, .. } = f;
 
         self.src.push_str(&String::from(src));
         // no need to manually deindent, because the line ends with a }
@@ -1296,8 +1438,9 @@ impl InterfaceGenerator<'_> {
         );
         let name = self.kotlin_fun_name(func);
         // TODO the .tmp call introduces non-determinism when it actually solves naming conflicts, maybe try to change that
-        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}", ));
-        self.private_top_level_src.push_str("internal external fun ");
+        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}",));
+        self.private_top_level_src
+            .push_str("internal external fun ");
         self.private_top_level_src.push_str(&import_name);
         self.private_top_level_src.push_str("(");
         for (i, param) in sig.params.iter().enumerate() {
@@ -1310,7 +1453,9 @@ impl InterfaceGenerator<'_> {
         self.private_top_level_src.push_str("): ");
         match sig.results.len() {
             0 => self.private_top_level_src.push_str("kotlin.Unit"),
-            1 => self.private_top_level_src.push_str(wasm_type(sig.results[0])),
+            1 => self
+                .private_top_level_src
+                .push_str(wasm_type(sig.results[0])),
             _ => unimplemented!("multi-value return not supported"),
         }
         self.private_top_level_src.push_str("\n");
@@ -1332,7 +1477,8 @@ impl InterfaceGenerator<'_> {
         );
         {
             let kotlin_sig = self.kotlin_signature(func, false, false);
-            if !matches!(func.kind, FunctionKind::Constructor(_)) {  // Constructor in exported abstract resource class is not needed
+            if !matches!(func.kind, FunctionKind::Constructor(_)) {
+                // Constructor in exported abstract resource class is not needed
                 // uwriteln!(self.src, "abstract {kotlin_sig}");
                 uwriteln!(self.export_stubs_src, "override {kotlin_sig} {{ TODO() }}");
             } else {
@@ -1374,7 +1520,6 @@ impl InterfaceGenerator<'_> {
         // because the line doesn't perfectly end with a {, need to manually increase the indent
         s.indent(1);
 
-
         // Perform all lifting/lowering and append it to our src.
         abi::call(
             f.r#gen.resolve,
@@ -1390,7 +1535,12 @@ impl InterfaceGenerator<'_> {
         self.private_top_level_src.push_str("}\n");
     }
 
-    fn kotlin_signature(&self, func: &Function, emit_kdoc: bool, emit_override_keyword: bool) -> String {
+    fn kotlin_signature(
+        &self,
+        func: &Function,
+        emit_kdoc: bool,
+        emit_override_keyword: bool,
+    ) -> String {
         let mut result = String::new();
 
         if emit_kdoc {
@@ -1414,10 +1564,16 @@ impl InterfaceGenerator<'_> {
         result.push_str("(");
         for (i, param) in func.params.iter().enumerate() {
             if let FunctionKind::Method(_) = func.kind {
-                if i == 0 { continue }
-                if i > 1 { result.push_str(", "); }
+                if i == 0 {
+                    continue;
+                }
+                if i > 1 {
+                    result.push_str(", ");
+                }
             } else {
-                if i > 0 { result.push_str(", "); }
+                if i > 0 {
+                    result.push_str(", ");
+                }
             }
             result.push_str(&to_kotlin_identifier(&*param.name));
             result.push_str(": ");
@@ -1479,22 +1635,46 @@ impl<'a, 'b> FunctionBindgen<'a, 'b> {
         }
     }
 
-    fn load(&mut self, ty: &str, offset: &ArchitectureSize, operands: &[String], results: &mut Vec<String>) {
+    fn load(
+        &mut self,
+        ty: &str,
+        offset: &ArchitectureSize,
+        operands: &[String],
+        results: &mut Vec<String>,
+    ) {
         // TODO see listlower
         let offset_wasm32 = offset.format("4");
-        results.push(format!("({} + {offset_wasm32}).ptr.load{ty}()", operands[0]));
+        results.push(format!(
+            "({} + {offset_wasm32}).ptr.load{ty}()",
+            operands[0]
+        ));
     }
 
-    fn load_ext(&mut self, ty: &str, offset: &ArchitectureSize, operands: &[String], results: &mut Vec<String>) {
+    fn load_ext(
+        &mut self,
+        ty: &str,
+        offset: &ArchitectureSize,
+        operands: &[String],
+        results: &mut Vec<String>,
+    ) {
         self.load(ty, offset, operands, results);
         let result = results.pop().unwrap();
         results.push(format!("{}.toInt()", result));
     }
 
-    fn store_impl(&mut self, ty: &str, offset: &ArchitectureSize, address: &String, value: &String) {
+    fn store_impl(
+        &mut self,
+        ty: &str,
+        offset: &ArchitectureSize,
+        address: &String,
+        value: &String,
+    ) {
         // TODO see listlower
         let offset_wasm32 = offset.format("4");
-        uwriteln!(self.src, "({address} + {offset_wasm32}).ptr.store{ty}({value})");
+        uwriteln!(
+            self.src,
+            "({address} + {offset_wasm32}).ptr.store{ty}({value})"
+        );
     }
 
     fn store(&mut self, ty: &str, offset: &ArchitectureSize, operands: &[String]) {
@@ -1519,7 +1699,11 @@ impl Bindgen for FunctionBindgen<'_, '_> {
     ) {
         let resource_handle_fqn = self.r#gen.r#gen.opts.support_package_fqn("ResourceHandle");
         let rep_table_fqn = self.r#gen.r#gen.opts.support_package_fqn("RepTable");
-        let component_exception_fqn = self.r#gen.r#gen.opts.support_package_fqn("ComponentException");
+        let component_exception_fqn = self
+            .r#gen
+            .r#gen
+            .opts
+            .support_package_fqn("ComponentException");
         let option_fqn = self.r#gen.r#gen.opts.support_package_fqn("Option");
 
         match inst {
@@ -1536,7 +1720,8 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                             WasmType::Pointer => "0",
                             WasmType::PointerOrI64 => "0L",
                             WasmType::Length => "0",
-                        }.to_string()
+                        }
+                        .to_string(),
                     );
                 }
             }
@@ -1569,8 +1754,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             }
 
             // TODO(Kotlin): Do we need a different representation for Char?
-            Instruction::CharFromI32
-            | Instruction::I32FromChar => results.push(operands[0].clone()),
+            Instruction::CharFromI32 | Instruction::I32FromChar => {
+                results.push(operands[0].clone())
+            }
 
             Instruction::Bitcasts { casts } => {
                 for (cast, op) in casts.iter().zip(operands) {
@@ -1598,26 +1784,24 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 results.push(result);
             }
 
-            Instruction::TupleLift { tuple, ty } => {
-                match tuple.types.len() {
-                    0 => {
-                        results.push("kotlin.Unit".to_string());
-                    }
-                    1 => {
-                        results.push(operands[0].clone());
-                    }
-                    count => {
-                        let name = self.r#gen.type_name(&Type::Id(*ty));
-                        self.r#gen.r#gen.tuple_counts.insert(count);
-                        let mut result = format!("{name}(\n");
-                        for op in operands {
-                            uwriteln!(result, "{},", op);
-                        }
-                        result.push_str(")");
-                        results.push(result);
-                    }
+            Instruction::TupleLift { tuple, ty } => match tuple.types.len() {
+                0 => {
+                    results.push("kotlin.Unit".to_string());
                 }
-            }
+                1 => {
+                    results.push(operands[0].clone());
+                }
+                count => {
+                    let name = self.r#gen.type_name(&Type::Id(*ty));
+                    self.r#gen.r#gen.tuple_counts.insert(count);
+                    let mut result = format!("{name}(\n");
+                    for op in operands {
+                        uwriteln!(result, "{},", op);
+                    }
+                    result.push_str(")");
+                    results.push(result);
+                }
+            },
 
             Instruction::TupleLower { tuple, .. } => {
                 let op = &operands[0];
@@ -1644,10 +1828,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 }
             }
 
-            Instruction::HandleLower {
-                handle,
-                ..
-            } => {
+            Instruction::HandleLower { handle, .. } => {
                 let (Handle::Own(ty) | Handle::Borrow(ty)) = handle;
                 let is_own = matches!(handle, Handle::Own(_));
                 let handle = self.locals.tmp("handle");
@@ -1670,10 +1851,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 }
 
                 if is_own {
-                    uwriteln!(
-                        self.src,
-                        "{op}.__handle = {resource_handle_fqn}(0);",
-                    );
+                    uwriteln!(self.src, "{op}.__handle = {resource_handle_fqn}(0);",);
                 }
 
                 results.push(format!("{handle}"))
@@ -1716,36 +1894,32 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     }
                 }
                 results.push(resource);
-            },
+            }
 
             Instruction::FlagsLower { flags, .. } => {
                 let value = format!("{}._value", operands[0]);
                 match flags.repr() {
-                    FlagsRepr::U8
-                    | FlagsRepr::U16
-                    | FlagsRepr::U32(1) => {
+                    FlagsRepr::U8 | FlagsRepr::U16 | FlagsRepr::U32(1) => {
                         results.push(format!("{value}.toInt()"))
                     }
                     FlagsRepr::U32(2) => {
-                            let tmp = self.locals.tmp("flags");
-                            uwriteln!(self.src, "val {tmp} = {value}");
-                            results.push(format!("{tmp}.toInt()"));
-                            results.push(format!("({tmp} ushr 32).toInt()"));
+                        let tmp = self.locals.tmp("flags");
+                        uwriteln!(self.src, "val {tmp} = {value}");
+                        results.push(format!("{tmp}.toInt()"));
+                        results.push(format!("({tmp} ushr 32).toInt()"));
                     }
                     FlagsRepr::U32(size) => {
-                        unimplemented!("sizes more than 2 are not supported for FlagsRepr::U32(size={size})")
+                        unimplemented!(
+                            "sizes more than 2 are not supported for FlagsRepr::U32(size={size})"
+                        )
                     }
                 }
             }
-            ,
-
             Instruction::FlagsLift { flags, ty, .. } => {
                 let class_name = self.r#gen.type_name(&Type::Id(*ty));
                 let op0 = &operands[0];
                 match flags.repr() {
-                    FlagsRepr::U8
-                    | FlagsRepr::U16
-                    | FlagsRepr::U32(1) => {
+                    FlagsRepr::U8 | FlagsRepr::U16 | FlagsRepr::U32(1) => {
                         results.push(format!("{class_name}({op0}.toLong())"))
                     }
 
@@ -1754,10 +1928,12 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         results.push(format!("{class_name}(({op0}.toLong() and 0xffffffffL) or ({op1}.toLong() shl 32))"));
                     }
                     FlagsRepr::U32(size) => {
-                        unimplemented!("sizes more than 2 are not supported for FlagsRepr::U32(size={size})")
+                        unimplemented!(
+                            "sizes more than 2 are not supported for FlagsRepr::U32(size={size})"
+                        )
                     }
                 }
-            },
+            }
 
             Instruction::VariantPayloadName => {
                 let payload = self.locals.tmp("payload");
@@ -1817,7 +1993,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 self.src.push_str("// VariantLower END\n");
             }
 
-            Instruction::VariantLift { variant,  ty, .. } => {
+            Instruction::VariantLift { variant, ty, .. } => {
                 self.src.push_str("// VariantLift START.\n");
 
                 let blocks = self
@@ -1833,16 +2009,19 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     variant.cases.iter().zip(blocks).enumerate()
                 {
                     let case_class_name = case.name.to_upper_camel_case();
-                    let case_class_qualified_name = format!("{variant_class_name}.{case_class_name}");
+                    let case_class_qualified_name =
+                        format!("{variant_class_name}.{case_class_name}");
 
                     uwriteln!(self.src, "{} -> {{", i);
                     self.src.push_str(&block);
                     match case.ty {
-                        None => {  // object case
+                        None => {
+                            // object case
                             assert_eq!(block_results.len(), 0);
                             uwriteln!(self.src, "{case_class_qualified_name}")
                         }
-                        Some(_) => {  // class with single property case
+                        Some(_) => {
+                            // class with single property case
                             assert_eq!(block_results.len(), 1);
                             let block_result = &block_results[0];
                             uwriteln!(self.src, "{case_class_qualified_name}({block_result})")
@@ -1881,24 +2060,30 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
                 let option_name = self.locals.tmp("option");
                 if is_option_type(self.r#gen.resolve, payload) {
-                    self.src.push_str(format!(
-                        "\
+                    self.src.push_str(
+                        format!(
+                            "\
                     val {option_name} = {op0}
                     if ({option_name} is {option_fqn}.Some) {{
                         val {some_payload} = {option_name}.value
                         {some}}} else {{
                         {none}}}
                     ",
-                    ).as_str());
+                        )
+                        .as_str(),
+                    );
                 } else {
-                    self.src.push_str(format!(
-                        "\
+                    self.src.push_str(
+                        format!(
+                            "\
                     val {some_payload} = {op0}
                     if ({some_payload} != null) {{
                         {some}}} else {{
                         {none}}}
                     "
-                    ).as_str());
+                        )
+                        .as_str(),
+                    );
                 }
             }
 
@@ -2004,7 +2189,6 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let op0 = &operands[0];
                 let result_tmp = self.locals.tmp("result");
 
-
                 let kt_result_type: String = self.r#gen.type_name(&Type::Id(*ty)).clone();
                 debug_assert!(kt_result_type.starts_with("kotlin.Result"));
                 let type_arguments = kt_result_type.strip_prefix("kotlin.Result").unwrap();
@@ -2017,9 +2201,13 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
                 let err_result = if let Some(_) = result.err.as_ref() {
                     let err_result = &err_results[0];
-                    format!("kotlin.Result.failure{type_arguments}({component_exception_fqn}({err_result}))")
+                    format!(
+                        "kotlin.Result.failure{type_arguments}({component_exception_fqn}({err_result}))"
+                    )
                 } else {
-                    format!("kotlin.Result.failure{type_arguments}({component_exception_fqn}(kotlin.Unit))")
+                    format!(
+                        "kotlin.Result.failure{type_arguments}({component_exception_fqn}(kotlin.Unit))"
+                    )
                 };
 
                 uwriteln!(
@@ -2036,9 +2224,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::EnumLower { .. } => results.push(format!("{}.ordinal", operands[0])),
             Instruction::EnumLift { ty, .. } => {
                 let op0 = &operands[0];
-                let enum_class_name= self.r#gen.type_name(&Type::Id(*ty)).clone();
+                let enum_class_name = self.r#gen.type_name(&Type::Id(*ty)).clone();
                 results.push(format!("{enum_class_name}.values()[{op0}]"));
-            },
+            }
 
             Instruction::ListCanonLower { .. } | Instruction::ListCanonLift { .. } => {
                 unreachable!("Kotlin Lists are non-canonical")
@@ -2099,7 +2287,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             }
 
             Instruction::ListLift { element, .. } => {
-                let (body,block_results) = self.blocks.pop().unwrap();
+                let (body, block_results) = self.blocks.pop().unwrap();
                 let address = &operands[0];
                 let length = &operands[1];
                 let list = self.locals.tmp("list");
@@ -2150,7 +2338,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     self.src.push_str(op);
                 }
                 self.src.push_str(")\n");
-                self.src.push_str("kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory();\n");
+                self.src.push_str(
+                    "kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory();\n",
+                );
             }
 
             Instruction::CallInterface { func, async_ } => {
@@ -2164,33 +2354,35 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         let assignment = format!("val {result}: {ty_str} = ");
                         results.push(result);
                         (assignment, String::new())
-                    }
-                    /*
-                    count => {
-                        self.r#gen.r#gen.tuple_counts.insert(count);
-                        let result = self.locals.tmp("result");
-                        let assignment = format!("val {result} = ");
+                    } /*
+                      count => {
+                          self.r#gen.r#gen.tuple_counts.insert(count);
+                          let result = self.locals.tmp("result");
+                          let assignment = format!("val {result} = ");
 
-                        let destructure = func
-                            .results
-                            .iter_types()
-                            .enumerate()
-                            .map(|(index, ty)| {
-                                let ty = self.r#gen.type_name(ty);
-                                let my_result = self.locals.tmp("result");
-                                let assignment = format!("val {my_result}: {ty} = {result}.f{index}");
-                                results.push(my_result);
-                                assignment
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                          let destructure = func
+                              .results
+                              .iter_types()
+                              .enumerate()
+                              .map(|(index, ty)| {
+                                  let ty = self.r#gen.type_name(ty);
+                                  let my_result = self.locals.tmp("result");
+                                  let assignment = format!("val {my_result}: {ty} = {result}.f{index}");
+                                  results.push(my_result);
+                                  assignment
+                              })
+                              .collect::<Vec<_>>()
+                              .join("\n");
 
-                        (assignment, destructure)
-                    }
-                     */
+                          (assignment, destructure)
+                      }
+                       */
                 };
 
-                let called_interface_kotlin_name = format!("{}Impl", &self.r#gen.referenced_interface.name_info.kotlin_name);
+                let called_interface_kotlin_name = format!(
+                    "{}Impl",
+                    &self.r#gen.referenced_interface.name_info.kotlin_name
+                );
                 let name = self.r#gen.kotlin_fun_name(func);
 
                 uwrite!(self.src, "{assignment}");
@@ -2213,40 +2405,42 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         let resource_class_name = self.r#gen.type_id_name(&resource_type);
                         let args = operands.join(", ");
                         uwriteln!(self.src, "{resource_class_name}({args})");
-                    },
-                    FunctionKind::AsyncFreestanding | FunctionKind::AsyncMethod(_) | FunctionKind::AsyncStatic(_) => unimplemented!("async")
+                    }
+                    FunctionKind::AsyncFreestanding
+                    | FunctionKind::AsyncMethod(_)
+                    | FunctionKind::AsyncStatic(_) => unimplemented!("async"),
                 }
                 uwriteln!(self.src, "{destructure}");
             }
-            Instruction::Return { amt, .. } => {
-                match *amt {
-                    0 => (),
-                    1 => uwriteln!(self.src, "return {}", operands[0]),
-                    count => {
-                        let results = operands.join(", ");
-                        self.r#gen.r#gen.tuple_counts.insert(count);
-                        uwriteln!(
-                            self.src,
-                            "return {}.Tuple{count}({results})",
-                            self.r#gen.r#gen.opts.kotlin_package_name
-                        )
-                    }
+            Instruction::Return { amt, .. } => match *amt {
+                0 => (),
+                1 => uwriteln!(self.src, "return {}", operands[0]),
+                count => {
+                    let results = operands.join(", ");
+                    self.r#gen.r#gen.tuple_counts.insert(count);
+                    uwriteln!(
+                        self.src,
+                        "return {}.Tuple{count}({results})",
+                        self.r#gen.r#gen.opts.kotlin_package_name
+                    )
                 }
-            }
+            },
 
-            Instruction::I32Load { offset } |
-            Instruction::PointerLoad { offset } |
-            Instruction::LengthLoad { offset } => self.load("Int", offset, operands, results),
+            Instruction::I32Load { offset }
+            | Instruction::PointerLoad { offset }
+            | Instruction::LengthLoad { offset } => self.load("Int", offset, operands, results),
             Instruction::I64Load { offset } => self.load("Long", offset, operands, results),
             Instruction::F32Load { offset } => self.load("Float", offset, operands, results),
             Instruction::F64Load { offset } => self.load("Double", offset, operands, results),
             Instruction::I32Load8U { offset } => self.load_ext("UByte", offset, operands, results),
             Instruction::I32Load8S { offset } => self.load_ext("Byte", offset, operands, results),
-            Instruction::I32Load16U { offset } => self.load_ext("UShort", offset, operands, results),
+            Instruction::I32Load16U { offset } => {
+                self.load_ext("UShort", offset, operands, results)
+            }
             Instruction::I32Load16S { offset } => self.load_ext("Short", offset, operands, results),
-            Instruction::I32Store { offset } |
-            Instruction::PointerStore { offset } |
-            Instruction::LengthStore { offset } => self.store("Int", offset, operands),
+            Instruction::I32Store { offset }
+            | Instruction::PointerStore { offset }
+            | Instruction::LengthStore { offset } => self.store("Int", offset, operands),
             Instruction::I64Store { offset } => self.store("Long", offset, operands),
             Instruction::F32Store { offset } => self.store("Float", offset, operands),
             Instruction::F64Store { offset } => self.store("Double", offset, operands),
@@ -2257,7 +2451,12 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 uwriteln!(self.src, "// GuestDeallocate({})", operands[0]);
             }
             Instruction::GuestDeallocateString => {
-                uwriteln!(self.src, "// GuestDeallocateString(len={}, ptr={})", operands[1], operands[0]);
+                uwriteln!(
+                    self.src,
+                    "// GuestDeallocateString(len={}, ptr={})",
+                    operands[1],
+                    operands[0]
+                );
             }
             Instruction::GuestDeallocateVariant { blocks } => {
                 let blocks = self
@@ -2275,29 +2474,36 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             }
             Instruction::GuestDeallocateList { .. } => {
                 let (body, _) = self.blocks.pop().unwrap();
-                uwriteln!(self.src, "// GuestDeallocateList(len={}, ptr={})", operands[1], operands[0]);
+                uwriteln!(
+                    self.src,
+                    "// GuestDeallocateList(len={}, ptr={})",
+                    operands[1],
+                    operands[0]
+                );
                 uwrite!(self.src, "{body}");
             }
 
             // i => unimplemented!("{:?}", i),
-            Instruction::FixedLengthListLift { .. }  |
-            Instruction::FixedLengthListLower { .. }  |
-            Instruction::FixedLengthListLowerToMemory { .. }  |
-            Instruction::FixedLengthListLiftFromMemory { .. } => unimplemented!("FixedLengthList"),
-            Instruction::FutureLower { .. }  |
-            Instruction::FutureLift { .. }  |
-            Instruction::AsyncTaskReturn { .. }  => unimplemented!("async"),
-            Instruction::MapLift { .. } |
-            Instruction::MapLower { .. }  |
-            Instruction::IterMapKey { .. } |
-            Instruction::IterMapValue { .. }  |
-            Instruction::GuestDeallocateMap { .. }  => unimplemented!("Map"),
-            Instruction::StreamLower { .. }  |
-            Instruction::StreamLift { .. }  |
-            Instruction::ErrorContextLower  |
-            Instruction::ErrorContextLift  |
-            Instruction::Malloc { .. }  |
-            Instruction::DropHandle { .. } => unimplemented!(),
+            Instruction::FixedLengthListLift { .. }
+            | Instruction::FixedLengthListLower { .. }
+            | Instruction::FixedLengthListLowerToMemory { .. }
+            | Instruction::FixedLengthListLiftFromMemory { .. } => {
+                unimplemented!("FixedLengthList")
+            }
+            Instruction::FutureLower { .. }
+            | Instruction::FutureLift { .. }
+            | Instruction::AsyncTaskReturn { .. } => unimplemented!("async"),
+            Instruction::MapLift { .. }
+            | Instruction::MapLower { .. }
+            | Instruction::IterMapKey { .. }
+            | Instruction::IterMapValue { .. }
+            | Instruction::GuestDeallocateMap { .. } => unimplemented!("Map"),
+            Instruction::StreamLower { .. }
+            | Instruction::StreamLift { .. }
+            | Instruction::ErrorContextLower
+            | Instruction::ErrorContextLift
+            | Instruction::Malloc { .. }
+            | Instruction::DropHandle { .. } => unimplemented!(),
             Instruction::Flush { amt } => {
                 // TODO not sure this is right, this is from the "other" rebase: https://github.com/Kotlin/wit-bindgen/pull/1/changes/a175db3d9c54c715fa6ccb713b5bdfa901cca21e#diff-099a6665acb2a63446a1f595cc2d6be28c15da4e0c37bfea976ebd52648aeccfR1861-R1863
                 results.extend(operands.iter().take(*amt).cloned());
@@ -2310,7 +2516,10 @@ impl Bindgen for FunctionBindgen<'_, '_> {
         let size_wasm32 = size.format("4");
         let align = align.align_wasm32();
         let ptr = self.locals.tmp("ptr");
-        uwriteln!(self.src, "val {ptr} = /* RETURN_ADDRESS_ALLOC(size_wasm32={size_wasm32}, align={align})*/ allocator.allocate({size_wasm32}).address.toInt()");
+        uwriteln!(
+            self.src,
+            "val {ptr} = /* RETURN_ADDRESS_ALLOC(size_wasm32={size_wasm32}, align={align})*/ allocator.allocate({size_wasm32}).address.toInt()"
+        );
         ptr
     }
 
@@ -2339,21 +2548,19 @@ fn perform_cast(op: &String, cast: &Bitcast) -> String {
         Bitcast::I32ToF32 => format!("kotlin.Float.fromBits({op})"),
         Bitcast::I64ToF32 => format!("kotlin.Float.fromBits({op}.toInt())"),
         Bitcast::I64ToF64 => format!("kotlin.Double.fromBits({op})"),
-        Bitcast::F32ToI32
-        | Bitcast::F64ToI64 => format!("{op}.toRawBits()"),
+        Bitcast::F32ToI32 | Bitcast::F64ToI64 => format!("{op}.toRawBits()"),
         Bitcast::F32ToI64 => format!("{op}.toRawBits().toLong()"),
         Bitcast::I32ToI64 => format!("{op}.toLong()"),
         Bitcast::I64ToI32 => format!("{op}.toInt()"),
         Bitcast::None => op.to_string(),
-        Bitcast::I32ToP |
-        Bitcast::PToI32 |
-        Bitcast::LToP |
-        Bitcast::I32ToL |
-        Bitcast::LToI32 |
-        Bitcast::PToL => format!("{op}"),
+        Bitcast::I32ToP
+        | Bitcast::PToI32
+        | Bitcast::LToP
+        | Bitcast::I32ToL
+        | Bitcast::LToI32
+        | Bitcast::PToL => format!("{op}"),
 
-        Bitcast::I64ToP64 |
-        Bitcast::P64ToI64 => format!("{op}"),
+        Bitcast::I64ToP64 | Bitcast::P64ToI64 => format!("{op}"),
 
         Bitcast::LToI64 | Bitcast::PToP64 => format!("({op}).toLong()"),
         Bitcast::I64ToL | Bitcast::P64ToP => format!("({op}).toInt()"),
@@ -2365,7 +2572,6 @@ fn perform_cast(op: &String, cast: &Bitcast) -> String {
     }
 }
 
-
 fn wasm_type(ty: WasmType) -> &'static str {
     match ty {
         WasmType::I32 => "kotlin.Int",
@@ -2374,7 +2580,7 @@ fn wasm_type(ty: WasmType) -> &'static str {
         WasmType::F64 => "kotlin.Double",
         WasmType::Pointer => "kotlin.Int",
         WasmType::PointerOrI64 => "kotlin.Long",
-        WasmType::Length => "kotlin.Int"
+        WasmType::Length => "kotlin.Int",
     }
 }
 
@@ -2382,9 +2588,9 @@ pub fn is_option_type(resolve: &Resolve, ty: &Type) -> bool {
     match ty {
         Type::Id(id) => match resolve.types[*id].kind {
             TypeDefKind::Option(_) => true,
-            _ => false
-        }
-        _ => false
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -2393,13 +2599,10 @@ pub fn to_kotlin_identifier(name: &str) -> String {
         // TODO use `` instead of appending '_'? a bit more idiomatic, but a bit less usable
         // Escape Kotlin keywords
         // Source: https://kotlinlang.org/docs/keyword-reference.html#hard-keywords
-        "as" |
-        "break" | "class" | "continue" | "do" | "else" | "false" |
-        "for" | "fun" | "if" | "in" | "interface" | "is" | "null" |
-        "object" | "package" | "return" | "super" | "this" | "throw" |
-        "true" | "try" | "typealias" | "typeof" | "val" | "var" |
-        "when" | "while"
-        => name.to_owned() + "_",
+        "as" | "break" | "class" | "continue" | "do" | "else" | "false" | "for" | "fun" | "if"
+        | "in" | "interface" | "is" | "null" | "object" | "package" | "return" | "super"
+        | "this" | "throw" | "true" | "try" | "typealias" | "typeof" | "val" | "var" | "when"
+        | "while" => name.to_owned() + "_",
         // ret and err needs to be escaped because they are used as
         //  variable names for option and result flattening.
         "ret" => "ret_".into(),
@@ -2414,7 +2617,11 @@ fn kotlin_interface_name_from_world_key(resolve: &Resolve, key: &WorldKey) -> St
         WorldKey::Name(n) => n.to_string().to_upper_camel_case(),
         WorldKey::Interface(inner_id) => {
             // TODO is there any case where this unwrap can fail?
-            resolve.interfaces[*inner_id].name.clone().unwrap().to_upper_camel_case()
+            resolve.interfaces[*inner_id]
+                .name
+                .clone()
+                .unwrap()
+                .to_upper_camel_case()
         }
     }
 }
@@ -2425,7 +2632,10 @@ fn interface_name_from_world_name(resolve: &Resolve, world: WorldId) -> Interfac
     // other options would be in-place, or world-level functions. But given that $root seems to be the accepted namespace, this makes sense:
     let iface_name = format!("{}-root-functions", world_name);
     // TODO not sure if the fqwit name really makes sense here, lets see
-    InterfaceNameInfo { kotlin_name: iface_name.to_upper_camel_case(), fq_wit_name: iface_name }
+    InterfaceNameInfo {
+        kotlin_name: iface_name.to_upper_camel_case(),
+        fq_wit_name: iface_name,
+    }
 }
 
 /// resolve.interfaces contains every interface once per import/export.
