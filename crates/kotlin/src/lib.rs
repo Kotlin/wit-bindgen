@@ -1,15 +1,14 @@
 use anyhow::Result;
 use heck::*;
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Write, format};
+use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::mem;
 use wit_bindgen_core::abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType};
 use wit_bindgen_core::{
-    Direction, Files, InterfaceGenerator as _, Ns, Source, WorldGenerator, dealias, uwrite,
-    uwriteln, wit_parser::*,
+    dealias, uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns,
+    Source, WorldGenerator,
 };
-use wit_component::TypeKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum OutsideKind {
@@ -361,7 +360,6 @@ impl WorldGenerator for Kotlin {
 
     fn finish(&mut self, resolve: &Resolve, id: WorldId, files: &mut Files) -> Result<()> {
         let world = &resolve.worlds[id];
-        let snake = world.name.to_upper_camel_case();
 
         let version = env!("CARGO_PKG_VERSION");
 
@@ -502,6 +500,7 @@ impl WorldGenerator for Kotlin {
 
                     let src = r#gen_imports.src.as_str();
                     let private_src = r#gen_imports.private_top_level_src.as_str();
+                    debug_assert_eq!(r#gen_imports.export_stubs_src.len(), 0);
 
                     self.src.as_mut_string().push_str(src);
                     self.private_src.as_mut_string().push_str(private_src);
@@ -547,12 +546,27 @@ impl WorldGenerator for Kotlin {
                     let private_src = r#gen_exports.private_top_level_src.as_str();
                     let export_stubs_src = r#gen_exports.export_stubs_src.as_str();
 
+                    let export_interface_kotlin_name =
+                        r#gen_exports.referenced_interface.name_info.kotlin_name;
+
                     self.src.as_mut_string().push_str(src);
                     self.private_src.as_mut_string().push_str(private_src);
-                    self.export_stubs_src
-                        .as_mut_string()
-                        .push_str(export_stubs_src);
-                    // TODO check export stubs for this case
+
+                    debug_assert!(export_stubs_src.len() > 0);
+
+                    // export stubs: surround them with the correct implementation
+
+                    let self_export_stubs_src = self.export_stubs_src.as_mut_string();
+
+                    self_export_stubs_src.push_str(
+                        format!(
+                            "object {}Impl : {}.Exports {{",
+                            export_interface_kotlin_name, kotlin_interface_name_for_world
+                        )
+                        .as_str(),
+                    );
+                    self_export_stubs_src.push_str(export_stubs_src);
+                    self_export_stubs_src.push_str("}\n");
                 }
 
                 self.src.push_str("}\n");
@@ -563,7 +577,10 @@ impl WorldGenerator for Kotlin {
         kt_str.as_mut_string().push_str(&self.src);
 
         // TODO(Kotlin): Add custom section
-        files.push(&format!("{snake}.kt"), kt_str.as_bytes());
+        files.push(
+            &format!("{}.kt", world.name.to_upper_camel_case()),
+            kt_str.as_bytes(),
+        );
 
         let mut private_kt_str = Source::default();
         wit_bindgen_core::generated_preamble(&mut private_kt_str, version);
@@ -578,7 +595,10 @@ impl WorldGenerator for Kotlin {
             "
         );
         private_kt_str.push_str(&self.private_src);
-        files.push(&format!("Internal{snake}.kt"), private_kt_str.as_bytes());
+        files.push(
+            &format!("Internal{}.kt", world.name.to_upper_camel_case()),
+            private_kt_str.as_bytes(),
+        );
 
         let mut write_component_support_kt = || {
             let mut support_kt_str = Source::default();
@@ -713,7 +733,10 @@ impl WorldGenerator for Kotlin {
             // TODO consider different package & outdir for export stubs
             stubs_kt.push_str(&format!("package {}\n\n", self.opts.kotlin_package_name));
             stubs_kt.push_str(&self.export_stubs_src);
-            files.push(&format!("{snake}Impl.kt"), stubs_kt.as_bytes());
+            files.push(
+                &format!("{}Impl.kt", world.name.to_upper_camel_case()),
+                stubs_kt.as_bytes(),
+            );
         }
 
         Ok(())
