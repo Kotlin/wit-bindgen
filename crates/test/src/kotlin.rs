@@ -1,17 +1,19 @@
-use std::{env, fs};
-use std::fmt::format;
-use std::path::{Path, PathBuf};
 use crate::{LanguageMethods, Runner, Verify};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use std::cell::OnceCell;
+use std::fmt::format;
+use std::mem::MaybeUninit;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::{env, fs};
 
 // auto pull kotlin compiler binary to test compilation
 
 pub const KOTLIN_VERSION: &str = "2.4.0-RC";
 // pub const KOTLIN_ZIP_SHA: &str = "5c3699980e09a65328d56a16aa8896ba0a421ce97865ca287c623897bf20a98e";
 
-fn simple_cmd_wrapper(dir:&PathBuf, full_cmd: &str) -> ExitStatus {
+fn simple_cmd_wrapper(dir: &PathBuf, full_cmd: &str) -> ExitStatus {
     let mut cmd = Command::new("/usr/bin/bash");
     let cmd = cmd.current_dir(dir).arg("-c").arg(full_cmd);
 
@@ -20,7 +22,8 @@ fn simple_cmd_wrapper(dir:&PathBuf, full_cmd: &str) -> ExitStatus {
 
 static COMPILED_MODULE_NUM: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-struct KotlincWasm{
+#[derive(Debug)]
+struct KotlincWasm {
     pub path_to_tmpdir: PathBuf,
     pub path_to_dist: PathBuf
 }
@@ -72,33 +75,23 @@ impl KotlincWasm {
 //     }
 // }
 
-static KOTLINC_DOWNLOAD: Mutex<Option<PathBuf>> = Mutex::new(None);
+static KOTLINC_DOWNLOAD: OnceLock<KotlincWasm> = OnceLock::new();
+fn reuse_or_download_kotlinc_wasm() -> Result<KotlincWasm> {
+    let path_to_tmpdir = env::temp_dir().join(format!("kotlinc-wasm-v{KOTLIN_VERSION}"));
+    let expected_dist_path = path_to_tmpdir.join("kotlinc");
 
-fn cached_download_and_extract_kotlinc_wasm() -> Result<KotlincWasm> {
-    let mut guard = KOTLINC_DOWNLOAD.lock().unwrap();
-    return match *guard {
-        Some(ref path_to_tmpdir) => {
-            // use already downloaded version
-            Ok(KotlincWasm { path_to_tmpdir: path_to_tmpdir.clone(), path_to_dist: path_to_tmpdir.clone().join("kotlinc")})
-        }
-        None => {
-            let path_to_tmpdir = env::temp_dir().join(format!("kotlinc-wasm-v{KOTLIN_VERSION}"));
-            let expected_dist_path = path_to_tmpdir.join("kotlinc");
-
-            if expected_dist_path.exists() {
-                // previous run on this machine has downloaded it already
-                *guard = Some(path_to_tmpdir.clone());
-                return Ok(KotlincWasm { path_to_tmpdir, path_to_dist: expected_dist_path });
-            }
-
-            // doesn't exist yet, so create and download
-            fs::create_dir_all(&path_to_tmpdir)?;
-
-            let kotlinc_wasm = download_and_extract_kotlinc_wasm(path_to_tmpdir)?;
-            *guard = Some(kotlinc_wasm.path_to_tmpdir.clone());
-            Ok(kotlinc_wasm)
-        }
+    if expected_dist_path.exists() {
+        // previous run on this machine has downloaded it already
+        return Ok(KotlincWasm {
+            path_to_tmpdir: path_to_tmpdir.clone(),
+            path_to_dist: path_to_tmpdir.clone().join("kotlinc"),
+        });
     }
+
+    // doesn't exist yet, so create and download
+    fs::create_dir_all(&path_to_tmpdir)?;
+
+    return download_and_extract_kotlinc_wasm(path_to_tmpdir);
 }
 
 /// Bit makeshift right now, fix once we can actually access the wasm-wasi stdlib in the dist
@@ -110,7 +103,6 @@ fn download_and_extract_kotlinc_wasm(path_to_tmpdir: PathBuf) -> Result<KotlincW
     if !simple_cmd_wrapper(&path_to_tmpdir, format!("unzip kotlin-compiler-{KOTLIN_VERSION}.zip").as_str()).success() {
         bail!("Failed to extract kotlin compiler release");
     }
-
 
     // TODO remove this in the future
     const WASM_WASI_STDLIB_KLIB_VERSION: &str = "2.4.20-dev-5102";
@@ -134,17 +126,8 @@ impl LanguageMethods for Kotlin {
     }
 
     fn prepare(&self, runner: &mut Runner) -> Result<()> {
-        println!("Testing if ktfmt is available...");
-        let test_crate = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let wit_bindgen_root = test_crate.parent().unwrap().parent().unwrap();
-        let ktfmt_jar = wit_bindgen_root.join("ktfmt-0.47-jar-with-dependencies.jar");
-        if !ktfmt_jar.exists() {
-            bail!(
-                "ktfmt jar not found at `{}`",
-                ktfmt_jar.display()
-            );
-        }
-        runner.run_command(Command::new("java").arg("-version"))?;
+        KOTLINC_DOWNLOAD.set(reuse_or_download_kotlinc_wasm()?)
+            .expect("KOTLINC_WASM was mistakenly initialized already");
         Ok(())
     }
 
@@ -201,11 +184,11 @@ impl LanguageMethods for Kotlin {
 
     // TODO probably use runner, e.g. for run_command?
 
-
     fn verify(&self, runner: &Runner, verify: &Verify) -> Result<()> {
         let test_crate = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-        let kotlinc_wasm = cached_download_and_extract_kotlinc_wasm()?;
+        // KOTLINC_DOWNLOAD is initialized in prepare()
+        let kotlinc_wasm = KOTLINC_DOWNLOAD.get().unwrap();
 
         // first get the files without a fixed name
         let mut files = verify.bindings_dir
