@@ -11,8 +11,9 @@ pub const KOTLIN_VERSION: &str = "2.4.0-RC";
 // pub const KOTLIN_ZIP_SHA: &str = "5c3699980e09a65328d56a16aa8896ba0a421ce97865ca287c623897bf20a98e";
 
 fn simple_cmd_wrapper(dir: &PathBuf, full_cmd: &str) -> ExitStatus {
-    let mut cmd = Command::new("/usr/bin/bash");
-    let cmd = cmd.current_dir(dir).arg("-c").arg(full_cmd);
+    let mut it = full_cmd.split_whitespace();
+    let mut cmd = Command::new(it.next().unwrap());
+    let cmd = cmd.current_dir(dir).args(it);
 
     cmd.status().expect("Failed to execute process")
 }
