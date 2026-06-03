@@ -22,34 +22,65 @@ static COMPILED_MODULE_NUM: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[derive(Debug)]
 struct KotlincWasm {
     pub path_to_tmpdir: PathBuf,
-    pub path_to_dist: PathBuf
+    pub path_to_dist: PathBuf,
 }
 
 impl KotlincWasm {
     const MODULE_BASE_NAME: &str = "main";
 
-    fn compile(&self, unique_test_str: &str, files:&[PathBuf]) -> Result<()> {
+    fn compile(&self, unique_test_str: &str, files: &[PathBuf]) -> Result<()> {
         let module_name = format!("{}-{}", Self::MODULE_BASE_NAME, unique_test_str);
-        let path_to_kotlinc = self.path_to_dist.join("bin/kotlinc-wasm").to_str().unwrap().to_string();
-        let path_to_outdir = self.path_to_tmpdir.join("out").to_str().unwrap().to_string();
-        let path_to_stdlib = self.path_to_dist.join("lib/kotlin-stdlib-wasm-wasi.klib").to_str().unwrap().to_string();
+        let path_to_kotlinc = self
+            .path_to_dist
+            .join("bin/kotlinc-wasm")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let path_to_outdir = self
+            .path_to_tmpdir
+            .join("out")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let path_to_stdlib = self
+            .path_to_dist
+            .join("lib/kotlin-stdlib-wasm-wasi.klib")
+            .to_str()
+            .unwrap()
+            .to_string();
 
-        let files_as_str = files.iter().map(|p| p.to_str().unwrap()).collect::<Vec<_>>().join(" ");
+        let files_as_str = files
+            .iter()
+            .map(|p| p.to_str().unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
 
         // stage 1: to klib
-        if !simple_cmd_wrapper(&self.path_to_tmpdir, format!("{path_to_kotlinc} \
+        if !simple_cmd_wrapper(
+            &self.path_to_tmpdir,
+            format!(
+                "{path_to_kotlinc} \
             -Xwasm-target=wasm-wasi \
             -Xir-produce-klib-file \
             -ir-output-dir {path_to_outdir} \
             -ir-output-name {module_name} \
             -libraries {path_to_stdlib} \
             {}
-            ", files_as_str.as_str()).as_str()).success() {
+            ",
+                files_as_str.as_str()
+            )
+            .as_str(),
+        )
+        .success()
+        {
             bail!("Stage 1 of compilation failed");
         }
 
         // stage 2: to binary
-        if !simple_cmd_wrapper(&self.path_to_tmpdir, format!("{path_to_kotlinc} \
+        if !simple_cmd_wrapper(
+            &self.path_to_tmpdir,
+            format!(
+                "{path_to_kotlinc} \
             -Xwasm-target=wasm-wasi \
             -Xir-produce-js \
             -Xinclude={path_to_outdir}/{module_name}.klib \
@@ -58,7 +89,12 @@ impl KotlincWasm {
             -libraries {path_to_stdlib} \
             {}
             ",
-            files_as_str.as_str()).as_str()).success() {
+                files_as_str.as_str()
+            )
+            .as_str(),
+        )
+        .success()
+        {
             bail!("Stage 2 of compilation failed");
         }
 
@@ -97,7 +133,12 @@ fn download_and_extract_kotlinc_wasm(path_to_tmpdir: PathBuf) -> Result<KotlincW
         bail!("Failed to download kotlin compiler release");
     }
 
-    if !simple_cmd_wrapper(&path_to_tmpdir, format!("unzip kotlin-compiler-{KOTLIN_VERSION}.zip").as_str()).success() {
+    if !simple_cmd_wrapper(
+        &path_to_tmpdir,
+        format!("unzip kotlin-compiler-{KOTLIN_VERSION}.zip").as_str(),
+    )
+    .success()
+    {
         bail!("Failed to extract kotlin compiler release");
     }
 
@@ -108,7 +149,10 @@ fn download_and_extract_kotlinc_wasm(path_to_tmpdir: PathBuf) -> Result<KotlincW
         bail!("Failed to download kotlin wasm-wasi stdlib");
     }
 
-    Ok(KotlincWasm { path_to_dist: path_to_tmpdir.join("kotlinc"), path_to_tmpdir })
+    Ok(KotlincWasm {
+        path_to_dist: path_to_tmpdir.join("kotlinc"),
+        path_to_tmpdir,
+    })
 }
 
 pub struct Kotlin;
@@ -123,7 +167,8 @@ impl LanguageMethods for Kotlin {
     }
 
     fn prepare(&self, runner: &mut Runner) -> Result<()> {
-        KOTLINC_DOWNLOAD.set(reuse_or_download_kotlinc_wasm()?)
+        KOTLINC_DOWNLOAD
+            .set(reuse_or_download_kotlinc_wasm()?)
             .expect("KOTLINC_WASM was mistakenly initialized already");
         Ok(())
     }
@@ -143,7 +188,7 @@ impl LanguageMethods for Kotlin {
         _args: &[String],
     ) -> bool {
         if config.error_context {
-            return true
+            return true;
         }
 
         if config.async_
@@ -163,19 +208,20 @@ impl LanguageMethods for Kotlin {
         }
 
         // TODO: fix these codegen failures
-        matches!(name,
-            "resource-alias.wit" |
-            "import-and-export-resource-alias.wit" |
-            "resources-in-aggregates.wit" |
-            "issue929-only-methods.wit" |
-            "resource-local-alias.wit" |
-            "resources-with-lists.wit" |
-            "resource-fallible-constructor.wit" |
-            "import-and-export-resource.wit" |
-            "issue1515-special-in-comment.wit" |
-            "issue929.wit" |
-            "named-fixed-length-list.wit" |
-            "issue-1433.wit"
+        matches!(
+            name,
+            "resource-alias.wit"
+                | "import-and-export-resource-alias.wit"
+                | "resources-in-aggregates.wit"
+                | "issue929-only-methods.wit"
+                | "resource-local-alias.wit"
+                | "resources-with-lists.wit"
+                | "resource-fallible-constructor.wit"
+                | "import-and-export-resource.wit"
+                | "issue1515-special-in-comment.wit"
+                | "issue929.wit"
+                | "named-fixed-length-list.wit"
+                | "issue-1433.wit"
         )
     }
 
@@ -188,19 +234,37 @@ impl LanguageMethods for Kotlin {
         let kotlinc_wasm = KOTLINC_DOWNLOAD.get().unwrap();
 
         // first get the files without a fixed name
-        let mut files = verify.bindings_dir
+        let mut files = verify
+            .bindings_dir
             .read_dir()?
             .filter_map(|entry| entry.ok())
-            .filter_map(|entry| entry.path().file_name().and_then(|name| name.to_str()).map(String::from))
+            .filter_map(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(String::from)
+            })
             .filter(|name| name.ends_with(".kt"))
             .map(|name| verify.bindings_dir.join(name))
             .collect::<Vec<_>>();
 
         // then add component support (its not on the same flat level as the other files)
-        files.push(files.first().unwrap().parent().unwrap().join("runtime").join("ComponentSupport.kt").to_path_buf());
+        files.push(
+            files
+                .first()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("runtime")
+                .join("ComponentSupport.kt")
+                .to_path_buf(),
+        );
 
         // TODO for now I'm simply assuming the test names are unique
-        kotlinc_wasm.compile(verify.wit_test.file_stem().unwrap().to_str().unwrap(), &*files)
-
+        kotlinc_wasm.compile(
+            verify.wit_test.file_stem().unwrap().to_str().unwrap(),
+            &*files,
+        )
     }
 }
