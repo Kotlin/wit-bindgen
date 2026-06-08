@@ -1149,7 +1149,10 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         }
 
         let variant_name_to_inherit_from = if variant_contains_same_name_case {
-            let typealias_dst = self.r#gen.names.tmp(&format!("{}Variant", variant_name));
+            let typealias_dst = self
+                .r#gen
+                .names
+                .tmp(&format!("__{}_variant_alias__", variant_name));
             uwriteln!(
                 self.src,
                 "private typealias {typealias_dst} = {variant_name}"
