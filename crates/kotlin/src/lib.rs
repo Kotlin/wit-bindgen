@@ -1915,7 +1915,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     uwriteln!(
                         self.src,
                         "if ({handle} == 0) {{
-                             var {local_rep} = {rep_table_fqn}({op});
+                             var {local_rep} = {rep_table_fqn}.add({op});
                              {handle} = {imported_function_prefix}_new({local_rep});
                          }}
                          ",
