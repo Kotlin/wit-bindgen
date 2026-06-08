@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use heck::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -359,6 +359,8 @@ impl WorldGenerator for Kotlin {
     }
 
     fn finish(&mut self, resolve: &Resolve, id: WorldId, files: &mut Files) -> Result<()> {
+        Self::verify_generatability(&self.generation_plan)?;
+
         let world = &resolve.worlds[id];
 
         let version = env!("CARGO_PKG_VERSION");
@@ -860,6 +862,26 @@ impl Kotlin {
         // }
 
         uwriteln!(self.private_src, "{private_top_level_body}\n");
+    }
+
+    // TODO Ideally, this most likely shouldn't exist (it's essentially another unimplemented! checker), as generally, anything that passes the wit syntax checker should generate correctly.
+    //      But for the time being, it should marginally improve the user experience by providing a more informative error message.
+    /// Is called in finish(), but before anything is actually done, in order to have full information about the generation plan.
+    fn verify_generatability(generation_plan: &GenerationPlan) -> Result<()> {
+        {
+            // check that no interfaces have the same name (could e.g. be because of multiple versions)
+            let set = generation_plan
+                .interfaces
+                .iter()
+                .map(|(iface, _)| iface.name_info.kotlin_name.clone())
+                .collect::<HashSet<_>>();
+            if set.len() != generation_plan.interfaces.len() {
+                bail!(
+                    "Missing feature: Duplicate interface names found in generation plan (most likely due to multiple versions of the package)"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
