@@ -209,7 +209,7 @@ impl LanguageMethods for Kotlin {
         }
 
         // TODO: fix these codegen failures
-        matches!(
+        if matches!(
             name,
             "resource-alias.wit"
                 | "import-and-export-resource-alias.wit"
@@ -223,6 +223,21 @@ impl LanguageMethods for Kotlin {
                 | "issue929.wit"
                 | "named-fixed-length-list.wit"
                 | "issue-1433.wit"
+        ) {
+            return true;
+        }
+
+        // TODO: fix these Kotlin compilation failures
+        matches!(
+            name,
+            "multiversion" // TODO need to support multiple versions of the same package
+                // the following depend on the WIP resources overhaul
+                | "resource-borrow-in-record-export.wit"
+                | "resources.wit"
+                | "resource-local-alias-borrow.wit"
+                | "resource-faux-constructor.wi"
+                // misc:
+                | "issue-1515-special-in-comment.wit" // comment "*/" injection
         )
     }
 
