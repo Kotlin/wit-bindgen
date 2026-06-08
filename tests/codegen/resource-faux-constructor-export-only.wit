@@ -1,0 +1,13 @@
+package my:resources;
+
+interface faux-constructor {
+  resource x {
+    //constructor(s: string) -> x;
+
+    thector: func() -> x;
+  }
+}
+
+world resources {
+  export faux-constructor;
+}

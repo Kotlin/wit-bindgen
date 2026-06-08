@@ -29,6 +29,13 @@ struct KotlincWasm {
 impl KotlincWasm {
     const MODULE_BASE_NAME: &str = "main";
 
+    const DISABLED_WARNINGS: &[&str] = &[
+        "REDUNDANT_ELSE_IN_WHEN",
+        "UNCHECKED_CAST",
+        // we assert this on options, but not all options are represented using nullable types
+        "UNNECESSARY_NOT_NULL_ASSERTION",
+    ];
+
     fn compile(&self, unique_test_str: &str, files: &[PathBuf]) -> Result<()> {
         let module_name = format!("{}-{}", Self::MODULE_BASE_NAME, unique_test_str);
         let path_to_kotlinc = self
@@ -56,12 +63,20 @@ impl KotlincWasm {
             .collect::<Vec<_>>()
             .join(" ");
 
+        let flags_for_disabled_warnings = Self::DISABLED_WARNINGS
+            .iter()
+            .map(|&flag| format!("-Xwarning-level={flag}:disabled"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
         // stage 1: to klib
         if !simple_cmd_wrapper(
             &self.path_to_tmpdir,
             format!(
                 "{path_to_kotlinc} \
             -Xwasm-target=wasm-wasi \
+            -Xrender-internal-diagnostic-names \
+            {flags_for_disabled_warnings} \
             -Xir-produce-klib-file \
             -ir-output-dir {path_to_outdir} \
             -ir-output-name {module_name} \
@@ -83,6 +98,8 @@ impl KotlincWasm {
             format!(
                 "{path_to_kotlinc} \
             -Xwasm-target=wasm-wasi \
+            -Xrender-internal-diagnostic-names \
+            {flags_for_disabled_warnings} \
             -Xir-produce-js \
             -Xinclude={path_to_outdir}/{module_name}.klib \
             -ir-output-dir {path_to_outdir} \
