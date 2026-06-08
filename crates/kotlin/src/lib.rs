@@ -1134,10 +1134,37 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
     fn type_variant(&mut self, _id: TypeId, name: &str, variant: &Variant, docs: &Docs) {
         self.src.push_str("\n");
+
+        let variant_name = name.to_upper_camel_case();
+
+        // First: check whether any case has the same name as the variant (this is legal in wit).
+        //        In that case we need to use a typealias for the variant name to avoid cyclically declaring a variant case as inheriting from itself. (`sealed interface X { object X:X }`)
+        let mut variant_contains_same_name_case = false;
+        for case in &variant.cases {
+            let case_name = case.name.to_upper_camel_case();
+            if case_name == variant_name {
+                variant_contains_same_name_case = true;
+                break;
+            }
+        }
+
+        let variant_name_to_inherit_from = if variant_contains_same_name_case {
+            let typealias_dst = self.r#gen.names.tmp(&format!("{}Variant", variant_name));
+            uwriteln!(
+                self.src,
+                "private typealias {typealias_dst} = {variant_name}"
+            );
+
+            typealias_dst
+        } else {
+            variant_name.clone()
+        };
+
         self.src.push_str(kdoc(docs).as_str());
         self.src.push_str("sealed interface ");
-        let variant_name = name.to_upper_camel_case();
         self.src.push_str(&variant_name);
+        // don't use variant_name anymore (can't move above, because it's still needed here)
+        let variant_name = ();
         self.src.push_str("{ \n");
         for case in &variant.cases {
             let case_name = case.name.to_upper_camel_case();
@@ -1155,7 +1182,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
                 }
             }
             self.src.push_str(" : ");
-            self.src.push_str(&variant_name);
+            self.src.push_str(&variant_name_to_inherit_from);
             self.src.push_str("\n");
         }
         self.src.push_str("}");
