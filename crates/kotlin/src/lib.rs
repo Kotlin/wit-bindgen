@@ -1055,7 +1055,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
                         // only non-constructors can be marked abstract, constructors are implicitly abstract in an abstract class
                         // only in abstract classes, i.e. TODO only when its just an export, not export and import
                         if !matches!(f.kind, FunctionKind::Constructor(_)) {
-                            uwriteln!(self.src, "abstract");
+                            uwrite!(self.src, "abstract ");
                         }
                         uwriteln!(self.src, "{}", self.kotlin_signature(f, false, false));
                     }
