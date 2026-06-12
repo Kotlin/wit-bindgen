@@ -129,9 +129,8 @@ impl KotlincWasm {
 static KOTLINC_DOWNLOAD: OnceLock<KotlincWasm> = OnceLock::new();
 fn reuse_or_download_kotlinc_wasm() -> Result<KotlincWasm> {
     let path_to_tmpdir = env::temp_dir().join(format!("kotlinc-wasm-v{KOTLIN_VERSION}"));
-    let expected_dist_path = path_to_tmpdir.join("kotlinc");
 
-    if expected_dist_path.exists() {
+    if path_to_tmpdir.join("successful-download").exists() {
         // previous run on this machine has downloaded it already
         return Ok(KotlincWasm {
             path_to_tmpdir: path_to_tmpdir.clone(),
@@ -147,7 +146,7 @@ fn reuse_or_download_kotlinc_wasm() -> Result<KotlincWasm> {
 
 /// Bit makeshift right now, fix once we can actually access the wasm-wasi stdlib in the dist
 fn download_and_extract_kotlinc_wasm(path_to_tmpdir: PathBuf) -> Result<KotlincWasm> {
-    if !simple_cmd_wrapper(&path_to_tmpdir, format!("curl -L -O https://github.com/JetBrains/kotlin/releases/download/v{KOTLIN_VERSION}/kotlin-compiler-{KOTLIN_VERSION}.zip").as_str()).success() {
+    if !simple_cmd_wrapper(&path_to_tmpdir, format!("curl -L --fail --remove-on-error -O https://github.com/JetBrains/kotlin/releases/download/v{KOTLIN_VERSION}/kotlin-compiler-{KOTLIN_VERSION}.zip").as_str()).success() {
         bail!("Failed to download kotlin compiler release");
     }
 
@@ -163,9 +162,11 @@ fn download_and_extract_kotlinc_wasm(path_to_tmpdir: PathBuf) -> Result<KotlincW
     // TODO remove this in the future
     const WASM_WASI_STDLIB_KLIB_VERSION: &str = "2.4.20-dev-5102";
     // add in the wasm-wasi stdlib, because the RC isnt new enough to have it yet
-    if !simple_cmd_wrapper(&path_to_tmpdir, format!("curl -L https://packages.jetbrains.team/maven/p/kt/dev/org/jetbrains/kotlin/kotlin-stdlib-wasm-wasi/{WASM_WASI_STDLIB_KLIB_VERSION}/kotlin-stdlib-wasm-wasi-{WASM_WASI_STDLIB_KLIB_VERSION}.klib -o kotlinc/lib/kotlin-stdlib-wasm-wasi.klib").as_str()).success() {
+    if !simple_cmd_wrapper(&path_to_tmpdir, format!("curl -L --fail --remove-on-error https://packages.jetbrains.team/maven/p/kt/dev/org/jetbrains/kotlin/kotlin-stdlib-wasm-wasi/{WASM_WASI_STDLIB_KLIB_VERSION}/kotlin-stdlib-wasm-wasi-{WASM_WASI_STDLIB_KLIB_VERSION}.klib -o kotlinc/lib/kotlin-stdlib-wasm-wasi.klib").as_str()).success() {
         bail!("Failed to download kotlin wasm-wasi stdlib");
     }
+
+    simple_cmd_wrapper(&path_to_tmpdir, "touch successful-download");
 
     Ok(KotlincWasm {
         path_to_dist: path_to_tmpdir.join("kotlinc"),
