@@ -1557,7 +1557,11 @@ impl InterfaceGenerator<'_> {
                 // uwriteln!(self.src, "abstract {kotlin_sig}");
                 uwriteln!(self.export_stubs_src, "override {kotlin_sig} {{ TODO() }}");
             } else {
-                uwriteln!(self.export_stubs_src, "{kotlin_sig} : super() {{ TODO() }}");
+                uwriteln!(self.export_stubs_src, "{kotlin_sig} : super(");
+                // n `TODO()` arguments for super constructor
+                self.export_stubs_src
+                    .push_str("TODO(), ".repeat(func.params.len()).as_str());
+                uwriteln!(self.export_stubs_src, ") {{ TODO() }}")
             }
         }
 
