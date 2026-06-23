@@ -1,5 +1,5 @@
 use crate::{LanguageMethods, Runner, Verify};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 use std::sync::{Mutex, OnceLock};
@@ -160,7 +160,7 @@ fn download_and_extract_kotlinc_wasm(path_to_tmpdir: PathBuf) -> Result<KotlincW
     }
 
     // TODO remove this in the future
-    const WASM_WASI_STDLIB_KLIB_VERSION: &str = "2.4.20-Beta1-1";
+    const WASM_WASI_STDLIB_KLIB_VERSION: &str = "2.4.20-Beta1-44";
     // add in the wasm-wasi stdlib, because the RC isnt new enough to have it yet
     if !simple_cmd_wrapper(&path_to_tmpdir, format!("curl -L --fail --remove-on-error https://packages.jetbrains.team/maven/p/kt/dev/org/jetbrains/kotlin/kotlin-stdlib-wasm-wasi/{WASM_WASI_STDLIB_KLIB_VERSION}/kotlin-stdlib-wasm-wasi-{WASM_WASI_STDLIB_KLIB_VERSION}.klib -o kotlinc/lib/kotlin-stdlib-wasm-wasi.klib").as_str()).success() {
         bail!("Failed to download kotlin wasm-wasi stdlib");
