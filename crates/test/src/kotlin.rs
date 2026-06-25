@@ -7,7 +7,7 @@ use std::{env, fs};
 
 // auto pull kotlin compiler binary to test compilation
 
-pub const KOTLIN_VERSION: &str = "2.4.0-RC";
+pub const KOTLIN_VERSION: &str = "2.4.20-Beta1";
 // pub const KOTLIN_ZIP_SHA: &str = "5c3699980e09a65328d56a16aa8896ba0a421ce97865ca287c623897bf20a98e";
 
 fn simple_cmd_wrapper(dir: &PathBuf, full_cmd: &str) -> ExitStatus {
@@ -157,13 +157,6 @@ fn download_and_extract_kotlinc_wasm(path_to_tmpdir: PathBuf) -> Result<KotlincW
     .success()
     {
         bail!("Failed to extract kotlin compiler release");
-    }
-
-    // TODO remove this in the future
-    const WASM_WASI_STDLIB_KLIB_VERSION: &str = "2.4.20-Beta1-44";
-    // add in the wasm-wasi stdlib, because the RC isnt new enough to have it yet
-    if !simple_cmd_wrapper(&path_to_tmpdir, format!("curl -L --fail --remove-on-error https://packages.jetbrains.team/maven/p/kt/dev/org/jetbrains/kotlin/kotlin-stdlib-wasm-wasi/{WASM_WASI_STDLIB_KLIB_VERSION}/kotlin-stdlib-wasm-wasi-{WASM_WASI_STDLIB_KLIB_VERSION}.klib -o kotlinc/lib/kotlin-stdlib-wasm-wasi.klib").as_str()).success() {
-        bail!("Failed to download kotlin wasm-wasi stdlib");
     }
 
     simple_cmd_wrapper(&path_to_tmpdir, "touch successful-download");
