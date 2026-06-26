@@ -1,5 +1,5 @@
 use crate::{LanguageMethods, Runner, Verify};
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 use std::sync::{Mutex, OnceLock};
@@ -242,11 +242,6 @@ impl LanguageMethods for Kotlin {
         matches!(
             name,
             "multiversion" // TODO need to support multiple versions of the same package
-                // the following depend on the WIP resources overhaul
-                | "resource-borrow-in-record-export.wit"
-                | "resources.wit"
-                | "resource-local-alias-borrow.wit"
-                | "resource-faux-constructor.wi"
                 // misc:
                 | "issue-1515-special-in-comment.wit" // comment "*/" injection
         )

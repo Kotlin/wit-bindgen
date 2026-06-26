@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use heck::*;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::hash::{Hash, Hasher};
@@ -622,7 +623,29 @@ impl WorldGenerator for Kotlin {
                 object None : Option<Nothing>
             }}
 
-            internal value class ResourceHandle(internal val value: Int)
+           /**
+            * Handle to represent the underlying resource.
+            * This is an internal implementation detail and should not be used directly.
+            * 0 stands for a handle that does not own a rep in the RepTable.
+            * This can either be a newly allocated handle, or one who's ownership was transferred out of the component in a canonical ABI owning-handle lower operation.
+            */
+            internal value class ResourceHandle(internal val value: Int) {{
+                companion object {{
+                    // TODO name
+// TODO im almost 100% sure this name/concept is wrong, or at least not the full concept. see the is_own check in lowering an owning handle
+                    const val DOES_NOT_OWN_REP = 0
+                }}
+            }}
+
+            // TODO notes:
+            // - would be nice for this to be internal & sealed, but doesnt work (sealed needs same package impls)
+            abstract class WitResource: AutoCloseable{{
+              // WIT resources are lazily added into the runtime (resource-new method) and RepTable,
+              // so initially, they don't own a rep
+              internal var __handle: ResourceHandle
+              internal constructor(handle: ResourceHandle) {{ __handle = handle }}
+              protected constructor() {{ __handle = ResourceHandle(ResourceHandle.DOES_NOT_OWN_REP) }}
+            }}
 
             @WasmExport
             fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
@@ -780,6 +803,20 @@ impl Kotlin {
             ReferencedMaybeAnonymousInterface::from(referenced_interface),
         );
 
+        // First define the types, because they need to exist so that the internal wit-bindgen state is correct (e.g. to track the outside_kind of a resource)
+
+        debug_assert!(r#gen.src.is_empty());
+        r#gen.src.push_str("// START OF TYPES\n\n");
+        for (name, ty) in &resolve.interfaces[referenced_interface_id].types {
+            r#gen.define_type(name, *ty);
+        }
+        r#gen.src.push_str("\n// END OF TYPES\n\n");
+
+        // IMPORTANT: We don't actually want to keep the types at the start, because its a bit ugly.
+        //            So take the existing src and replace it with an empty one, which will be the
+        //            actual start.
+        let tmp_types_src = mem::take(&mut r#gen.src);
+
         // because this will be inside an interface, add one level of indentation
         r#gen.src.indent(1);
 
@@ -787,6 +824,7 @@ impl Kotlin {
             r#gen.src.push_str(format!("@WitImport\ncompanion object Import : {kotlin_package}.{kotlin_name} {{\n// <editor-fold defaultstate=\"collapsed\" desc=\"Generated Import Code\">\n").as_str());
         }
 
+        // TODO don't emit the companion object if there are no functions
         for (_name, func) in resolve.interfaces[referenced_interface_id].functions.iter() {
             // TODO non-freestanding
             if func.kind == FunctionKind::Freestanding {
@@ -805,13 +843,8 @@ impl Kotlin {
         if outside_kind.is_imported() {
             r#gen.src.push_str("// </editor-fold>\n}\n");
         }
-        r#gen.src.push_str("// START OF TYPES\n\n");
 
-        for (name, ty) in &resolve.interfaces[referenced_interface_id].types {
-            r#gen.define_type(name, *ty);
-        }
-
-        r#gen.src.push_str("\n// END OF TYPES\n\n");
+        r#gen.src.append_src(&tmp_types_src);
 
         // write all the functions again as a declaration only, after closing the companion obj
         for (_name, func) in resolve.interfaces[referenced_interface_id].functions.iter() {
@@ -927,7 +960,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
                 !self.outside_kind.is_imported(),
                 "Exported and imported resources unsupported for now"
             );
-            // once we support exporting and importing a resource, this r#gen.exported_resources needs to be reworked, because right now (resource !in exported_resources) === (reource imported); which won't hold true then
+            // TODO once we support exporting and importing a resource, this r#gen.exported_resources needs to be reworked, because right now (resource !in exported_resources) === (resource imported); which won't hold true then
             self.r#gen.exported_resources.insert(type_id);
         }
 
@@ -946,12 +979,12 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             format!("[export]{import_module}")
         };
 
-        let imported_function_prefix = self.resource_import_prefix(&type_id);
+        let runtime_function_prefix = self.runtime_exposed_resource_function_prefix(&type_id);
 
         self.private_top_level_src.push_str(&format!(
             r#"
                 @kotlin.wasm.WasmImport("{import_module}", "[resource-drop]{name}")
-                internal external fun {imported_function_prefix}_drop(handle: kotlin.Int): kotlin.Unit
+                internal external fun {runtime_function_prefix}_drop(handle: kotlin.Int): kotlin.Unit
             "#
         ));
 
@@ -959,41 +992,65 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             self.private_top_level_src.push_str(&format!(
                 r#"
                     @kotlin.wasm.WasmImport("{import_module}", "[resource-new]{name}")
-                    internal external fun {imported_function_prefix}_new(handle: kotlin.Int): kotlin.Int
+                    internal external fun {runtime_function_prefix}_new(handle: kotlin.Int): kotlin.Int
 
                     @kotlin.wasm.WasmImport("{import_module}", "[resource-rep]{name}")
-                    internal external fun {imported_function_prefix}_rep(handle: kotlin.Int): kotlin.Int
+                    internal external fun {runtime_function_prefix}_rep(handle: kotlin.Int): kotlin.Int
+                "#
+            ));
+
+            // TODO can't use Function::core_export_name because we don't have a function, so we need to mangle it ourselves
+            // TODO switch to new mangling as soon as it work
+
+            let mangled_wit_export_name = format!(
+                "{}#dtor[{}]",
+                self.referenced_interface.name_info.fq_wit_name, name
+            );
+
+            let name_snake = name.to_snake_case();
+            let export_fun_name = self
+                .r#gen
+                .names
+                .tmp(&format!("__wasm_export_{name_snake}_dtor"));
+
+            let rep_table_fqn = self.r#gen.opts.support_package_fqn("RepTable");
+            let resource_handle_fqn = self.r#gen.opts.support_package_fqn("ResourceHandle");
+            let wit_resource_fqn = self.r#gen.opts.support_package_fqn("WitResource");
+
+            self.private_top_level_src.push_str(&format!(
+                r#"
+                    @kotlin.wasm.WasmExport("{mangled_wit_export_name}")
+                    internal fun {export_fun_name}(rep: kotlin.Int) {{
+                        val resource = {rep_table_fqn}.remove(rep) as {wit_resource_fqn}
+                        resource.__handle = {resource_handle_fqn}({resource_handle_fqn}.DOES_NOT_OWN_REP)
+                    }}
                 "#
             ));
         }
 
         self.src.push_str(kdoc(docs).as_str());
-        if self.outside_kind.is_exported() {
-            uwrite!(self.src, "abstract ")
-        }
+        let class_kind: &str = match self.outside_kind {
+            // TODO this first case is dead code for now
+            OutsideKind::Both => "open class ", // -> need ability to implement the resource, but also to construct/use it
+            // -> open class: can inherit, but also construct base class instance
+            OutsideKind::Imported => "class ", // -> don't need to be able to implement subclass
+            OutsideKind::Exported => "abstract class ", // -> don't allow base class instances, by using an abstract class
+        };
+        self.src.push_str(class_kind);
 
-        uwriteln!(self.src, "class {camel} : kotlin.AutoCloseable {{");
-        uwriteln!(
+        // class name and inheritance
+        uwrite!(
             self.src,
-            "internal var __handle: {} = {0}(0)",
-            self.r#gen.opts.support_package_fqn("ResourceHandle")
+            "{camel} : {}",
+            self.r#gen.opts.support_package_fqn("WitResource"),
         );
 
-        if self.outside_kind.is_imported() {
-            // Exported constructor handle
-            uwriteln!(
-                self.src,
-                "internal constructor(handle: {}) {{ __handle = handle }}",
-                self.r#gen.opts.support_package_fqn("ResourceHandle")
-            );
+        if self.outside_kind.is_exported() {
+            // call super constructor
+            uwrite!(self.src, "()");
         }
 
-        // TODO: Zero out the handle
-        // NOTE: cannot use uwriteln! here, because the way it splits up the arguments messes up indentation (one split ends with '{')
-        self.src.push_str(
-            format!("override fun close() {{ {imported_function_prefix}_drop(__handle.value) }}\n")
-                .as_str(),
-        );
+        uwriteln!(self.src, " {{");
 
         let ty = &self.resolve.types[type_id];
         let mut functions: Vec<&Function> = Vec::new();
@@ -1031,6 +1088,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
                 }
             }
             // If exported resource doesn't have a constructor, call the primary super constructor
+            // TODO adjust this based on new WitResource class
             let maybe_super_constructor_call = if has_constructor { "" } else { "()" };
 
             uwriteln!(
@@ -1039,8 +1097,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             );
         }
 
-        // TODO: until we decide on the redesign for resources, it makes little sense to implement importing + exporting the same one yet
-        //       It's rare in any case, and might cause headaches with the old design that are irrelevant later
+        let mut has_static_functions = false;
 
         for f in &functions {
             match f.kind {
@@ -1050,47 +1107,104 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
                         self.push_import_adapter_impl(&f, false, &private_src_imported_fn_name);
                     } else {
+                        // TODO handle the imported and exporetd case
                         self.push_export_stubs_and_private_src_impl(f);
 
                         // only non-constructors can be marked abstract, constructors are implicitly abstract in an abstract class
                         // only in abstract classes, i.e. TODO only when its just an export, not export and import
-                        if !matches!(f.kind, FunctionKind::Constructor(_)) {
-                            uwrite!(self.src, "abstract ");
+                        if matches!(f.kind, FunctionKind::Constructor(_)) {
+                            // TODO rethink this, but it seems that for the export case, it doesn't make sense to generate a constructor here, because it can't really do anything, by definition. We would only want to mandate the subclass to implement this constructor, but can't directly generate it ourselves
+                            continue;
                         }
+                        uwrite!(self.src, "abstract ");
                         uwriteln!(self.src, "{}", self.kotlin_signature(f, false, false));
                     }
                 }
+                FunctionKind::Static(_) => has_static_functions = true,
                 _ => {}
             }
         }
 
-        if self.outside_kind.is_exported() {
+        if has_static_functions {
+            // TODO this interface should probably have a deduplicated name, but this really rather needs a generic solution that works for all "custom" identifiers we use that could conflict with user-defined ones
+
+            // all static functions are inside a Statics interface, that is emitted regardless of import vs export
             uwriteln!(self.src, "interface Statics {{");
-            uwriteln!(self.export_stubs_src, "companion object : Statics {{");
-        } else {
-            uwriteln!(self.src, "companion object {{");
-        }
+            if self.outside_kind.is_exported() {
+                uwriteln!(self.export_stubs_src, "companion object : Statics {{");
+            }
 
-        for f in &functions {
-            match f.kind {
-                FunctionKind::Static(id) if id == type_id => {
-                    if self.outside_kind.is_imported() {
-                        let private_src_imported_fn_name = self.push_import_private_src_impl(f);
-
-                        self.push_import_adapter_impl(&f, false, &private_src_imported_fn_name);
-                    } else {
-                        self.push_export_stubs_and_private_src_impl(f);
-
+            functions.retain(|f| {
+                match f.kind {
+                    FunctionKind::Static(id) if id == type_id => {
                         uwriteln!(self.src, "{}", self.kotlin_signature(f, false, false));
+                        // retain
+                        true
                     }
+                    _ => false,
                 }
-                _ => {}
+            });
+            // these are now all static functions of the type_id as matched above
+            let matching_static_functions = functions;
+
+            // close interface Statics
+            self.src.push_str("}\n");
+
+            if self.outside_kind.is_imported() {
+                self.src.push_str("companion object : Statics {\n");
+            }
+
+            for f in &matching_static_functions {
+                if self.outside_kind.is_imported() {
+                    let private_src_imported_fn_name = self.push_import_private_src_impl(f);
+
+                    self.push_import_adapter_impl(&f, true, &private_src_imported_fn_name);
+                }
+                if self.outside_kind.is_exported() {
+                    self.push_export_stubs_and_private_src_impl(f);
+                }
+            }
+
+            if self.outside_kind.is_exported() {
+                // close implementing companion object
+                self.export_stubs_src.push_str("}\n\n");
+            }
+
+            if self.outside_kind.is_imported() {
+                // close importing companion object
+                self.src.push_str("}\n\n");
             }
         }
-        self.src.push_str("}\n}\n");
 
+        uwriteln!(self.src, "");
+
+        // provide handle constructor if its an import
+        if self.outside_kind.is_imported() {
+            uwriteln!(
+                self.src,
+                "internal constructor(handle: {}) : super(handle)",
+                self.r#gen.opts.support_package_fqn("ResourceHandle"),
+            );
+        }
+
+        // always override close()
+        // TODO figure out if I can create a workaround for this to go in the superclass. Problem
+        //      seems to be that this depends on the exact resource, right?
+        //      Maybe compiler magic is the solution? If we move WitResource to stdlib?
+        // TODO: Zero out the handle
+        let resource_handle_fqn = self.r#gen.opts.support_package_fqn("ResourceHandle");
+        // NOTE: cannot use uwriteln! here, because the way it splits up the arguments messes up indentation (one split ends with '{')
+        self.src.push_str(
+            // TODO move to the end, put inside editor-fold
+            format!("override fun close() {{ if(__handle.value != {resource_handle_fqn}.DOES_NOT_OWN_REP) {runtime_function_prefix}_drop(__handle.value); __handle = {resource_handle_fqn}({resource_handle_fqn}.DOES_NOT_OWN_REP); }}\n")
+                .as_str(),
+        );
+
+        // close class body
+        self.src.push_str("}\n\n");
         if self.outside_kind.is_exported() {
-            self.export_stubs_src.push_str("}\n}\n");
+            // close implementing Impl class body
+            self.export_stubs_src.push_str("}\n\n");
         }
     }
 
@@ -1239,7 +1353,11 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 }
 
 impl InterfaceGenerator<'_> {
-    fn resource_import_prefix(&self, id: &TypeId) -> String {
+    /// This refers to the prefix for functions that the host has to expose to support resources, e.g.:
+    /// - a drop function to drop the resource (always)
+    /// - a new function, to create a new instance of the resource (not for imported resources, as instances of imported resources cannot be created by the importer)
+    /// - a rep function, to extract the resource representation from the handle (not for imported, to only expose the representation of locally-defined resources)
+    fn runtime_exposed_resource_function_prefix(&self, id: &TypeId) -> String {
         let mut result = String::new();
         let is_exported = self.r#gen.exported_resources.contains(&id);
         let ty = &self.resolve.types[*id];
@@ -1541,27 +1659,15 @@ impl InterfaceGenerator<'_> {
         let wasm_sig = self.resolve.wasm_signature(AbiVariant::GuestExport, func);
 
         let fq_wit_name = self.referenced_interface.name_info.fq_wit_name.as_str();
-        // TODO once it works, migrate to new mangling
-        let export_name = func.core_export_name(
-            if fq_wit_name == "\\$root" {
-                None
-            } else {
-                Some(fq_wit_name)
-            },
-            Mangling::Legacy,
-        );
+        let export_name = Self::mangle_wit_symbol_export_name(func, fq_wit_name);
         {
             let kotlin_sig = self.kotlin_signature(func, false, false);
             if !matches!(func.kind, FunctionKind::Constructor(_)) {
                 // Constructor in exported abstract resource class is not needed
-                // uwriteln!(self.src, "abstract {kotlin_sig}");
                 uwriteln!(self.export_stubs_src, "override {kotlin_sig} {{ TODO() }}");
             } else {
-                uwriteln!(self.export_stubs_src, "{kotlin_sig} : super(");
-                // n `TODO()` arguments for super constructor
-                self.export_stubs_src
-                    .push_str("TODO(), ".repeat(func.params.len()).as_str());
-                uwriteln!(self.export_stubs_src, ") {{ TODO() }}")
+                // TODO refactor/remove this, this is wrong once we have the superclass
+                uwriteln!(self.export_stubs_src, "{kotlin_sig} {{ TODO() }}");
             }
         }
 
@@ -1569,8 +1675,7 @@ impl InterfaceGenerator<'_> {
             self.private_top_level_src,
             "\n@kotlin.wasm.WasmExport(\"{export_name}\")"
         );
-        let name = self.kotlin_fun_name(func);
-        let export_fun_name = self.r#gen.names.tmp(&format!("__wasm_export_{name}"));
+        let export_fun_name = self.kotlin_export_fun_name(func);
 
         let mut f = FunctionBindgen::new(self, &export_fun_name, func.kind.clone());
         let s: &mut Source = &mut f.r#gen.private_top_level_src;
@@ -1610,8 +1715,24 @@ impl InterfaceGenerator<'_> {
         );
         let FunctionBindgen { src, .. } = f;
         self.private_top_level_src.push_str(&src);
-        self.private_top_level_src.push_str("}\n");
-        self.private_top_level_src.push_str("}\n");
+        self.private_top_level_src.push_str("}\n}\n");
+    }
+
+    // TODO once it works, migrate to new mangling
+    fn mangle_wit_symbol_export_name<'a>(func: &'a Function, fq_wit_name: &str) -> Cow<'a, str> {
+        func.core_export_name(
+            if fq_wit_name == "\\$root" {
+                None
+            } else {
+                Some(fq_wit_name)
+            },
+            Mangling::Legacy,
+        )
+    }
+
+    fn kotlin_export_fun_name(&mut self, func: &Function) -> String {
+        let name = self.kotlin_fun_name(func);
+        return self.r#gen.names.tmp(&format!("__wasm_export_{name}"));
     }
 
     fn kotlin_signature(
@@ -1912,7 +2033,8 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let is_own = matches!(handle, Handle::Own(_));
                 let handle = self.locals.tmp("handle");
                 let id = dealias(self.r#gen.resolve, *ty);
-                let imported_function_prefix = self.r#gen.resource_import_prefix(&id);
+                let imported_function_prefix =
+                    self.r#gen.runtime_exposed_resource_function_prefix(&id);
                 let is_exported = self.r#gen.r#gen.exported_resources.contains(&id);
                 let op = &operands[0];
                 uwriteln!(self.src, "var {handle} = {op}.__handle.value;");
@@ -1921,7 +2043,8 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     let local_rep = self.locals.tmp("localRep");
                     uwriteln!(
                         self.src,
-                        "if ({handle} == 0) {{
+                        // NOTE this is basically lazy init, because only when we lower a handle do we need to actually initialize the rep/add it to the rep table
+                        "if ({handle} == {resource_handle_fqn}.DOES_NOT_OWN_REP) {{
                              var {local_rep} = {rep_table_fqn}.add({op});
                              {handle} = {imported_function_prefix}_new({local_rep});
                          }}
@@ -1941,13 +2064,15 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let is_own = matches!(handle, Handle::Own(_));
                 let resource = self.locals.tmp("resource");
                 let id = dealias(self.r#gen.resolve, *ty);
-                let imported_function_prefix = self.r#gen.resource_import_prefix(&id);
+                let imported_function_prefix =
+                    self.r#gen.runtime_exposed_resource_function_prefix(&id);
                 let is_exported = self.r#gen.r#gen.exported_resources.contains(&id);
                 let op = &operands[0];
                 let resource_type_name = self.r#gen.type_name(&Type::Id(*ty));
 
                 if is_exported {
                     if is_own {
+                        // we're getting ownership (back, in case we transferred it before)
                         uwriteln!(self.src,
                             "val {resource} = {rep_table_fqn}.get({imported_function_prefix}_rep({op})) as {resource_type_name}
                                  {resource}.__handle = {resource_handle_fqn}({op})
