@@ -277,7 +277,9 @@ impl WorldGenerator for Kotlin {
         _files: &mut Files,
     ) {
         for (name, func) in funcs {
-            debug_assert!(func.kind != FunctionKind::AsyncFreestanding);
+            if func.kind == FunctionKind::AsyncFreestanding {
+                unimplemented!("async unimplemented");
+            }
 
             // only add in place funcs if they're freestanding, otherwise they are part of a resource
 
@@ -299,7 +301,9 @@ impl WorldGenerator for Kotlin {
         _files: &mut Files,
     ) -> Result<()> {
         for (name, func) in funcs {
-            debug_assert!(func.kind != FunctionKind::AsyncFreestanding);
+            if func.kind == FunctionKind::AsyncFreestanding {
+                unimplemented!("async unimplemented");
+            }
 
             // see import_funcs for explanation
 
@@ -2420,7 +2424,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
             Instruction::CallInterface { func, async_ } => {
                 // TODO async
-                debug_assert_eq!(*async_, false);
+                if *async_ {
+                    unimplemented!("async unimplemented");
+                }
                 let (assignment, destructure) = match func.result {
                     None => (String::new(), String::new()),
                     Some(ty) => {
