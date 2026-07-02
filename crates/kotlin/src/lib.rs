@@ -7,8 +7,8 @@ use std::hash::{Hash, Hasher};
 use std::mem;
 use wit_bindgen_core::abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType};
 use wit_bindgen_core::{
-    dealias, uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns,
-    Source, WorldGenerator,
+    dealias, uwrite, uwriteln, wit_parser::*, Files, InterfaceGenerator as _, Ns, Source,
+    WorldGenerator,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -167,12 +167,7 @@ struct Kotlin {
     world_id: Option<WorldId>,
     tuple_counts: HashSet<usize>,
     interface_kotlin_names: HashMap<InterfaceId, String>,
-    exported_resources: HashSet<TypeId>,
-}
-
-#[derive(Default)]
-pub struct ResourceInfo {
-    pub direction: Direction,
+    resource_outside_kinds: HashMap<TypeId, OutsideKind>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -959,23 +954,20 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
     }
 
     fn type_resource(&mut self, type_id: TypeId, name: &str, docs: &Docs) {
-        if self.outside_kind.is_exported() {
-            debug_assert!(
-                !self.outside_kind.is_imported(),
-                "Exported and imported resources unsupported for now"
-            );
-            // TODO once we support exporting and importing a resource, this r#gen.exported_resources needs to be reworked, because right now (resource !in exported_resources) === (resource imported); which won't hold true then
-            self.r#gen.exported_resources.insert(type_id);
-        }
+        self.r#gen
+            .resource_outside_kinds
+            .insert(type_id, self.outside_kind);
 
         let camel = name.to_upper_camel_case();
 
         let import_module = self.referenced_interface.name_info.fq_wit_name.clone();
 
+        /*
         assert!(
             self.outside_kind.is_exported() ^ self.outside_kind.is_imported(),
             "Exported and imported resources unsupported for now"
         );
+         */
 
         let import_module = if self.outside_kind.is_imported() {
             import_module
@@ -1110,8 +1102,8 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
                         let private_src_imported_fn_name = self.push_import_private_src_impl(f);
 
                         self.push_import_adapter_impl(&f, false, &private_src_imported_fn_name);
-                    } else {
-                        // TODO handle the imported and exporetd case
+                    }
+                    if self.outside_kind.is_exported() {
                         self.push_export_stubs_and_private_src_impl(f);
 
                         // only non-constructors can be marked abstract, constructors are implicitly abstract in an abstract class
@@ -1363,19 +1355,16 @@ impl InterfaceGenerator<'_> {
     /// - a rep function, to extract the resource representation from the handle (not for imported, to only expose the representation of locally-defined resources)
     fn runtime_exposed_resource_function_prefix(&self, id: &TypeId) -> String {
         let mut result = String::new();
-        let is_exported = self.r#gen.exported_resources.contains(&id);
         let ty = &self.resolve.types[*id];
+
+        // TODO seems that this doesn't really need the info whether the resource is imported or exported or both, its just a niceity for the function names, but given that those shouldn't really ever be read anyway...
 
         debug_assert_eq!(ty.kind, TypeDefKind::Resource);
 
         match &ty.owner {
             TypeOwner::Interface(ty_interface_id) => {
                 let kotlin_name = &self.r#gen.interface_kotlin_names[ty_interface_id];
-                if is_exported {
-                    uwrite!(result, "{kotlin_name}Impl");
-                } else {
-                    uwrite!(result, "{kotlin_name}");
-                }
+                uwrite!(result, "{kotlin_name}");
             }
             TypeOwner::World(_) => {
                 uwrite!(result, "root");
@@ -1392,11 +1381,7 @@ impl InterfaceGenerator<'_> {
         }
 
         let common_prefix = "__cm_resource_abi";
-        return if is_exported {
-            format!("{common_prefix}_export_{result}")
-        } else {
-            format!("{common_prefix}_import_{result}")
-        };
+        return format!("{common_prefix}_{result}");
     }
 
     fn type_name(&self, ty: &Type) -> String {
@@ -1442,7 +1427,9 @@ impl InterfaceGenerator<'_> {
             | TypeDefKind::Flags(_)
             | TypeDefKind::Enum(_)
             | TypeDefKind::Variant(_) => {
-                let is_exported_resource = self.r#gen.exported_resources.contains(id);
+                // TODO fix
+                let is_exported_resource = self.r#gen.resource_outside_kinds.contains_key(id)
+                    && self.r#gen.resource_outside_kinds[id].is_exported();
                 match &ty.owner {
                     TypeOwner::Interface(ty_interface_id) => {
                         let kotlin_name = &self.r#gen.interface_kotlin_names[ty_interface_id];
@@ -2039,7 +2026,8 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let id = dealias(self.r#gen.resolve, *ty);
                 let imported_function_prefix =
                     self.r#gen.runtime_exposed_resource_function_prefix(&id);
-                let is_exported = self.r#gen.r#gen.exported_resources.contains(&id);
+                // TODO fix
+                let is_exported = self.r#gen.r#gen.resource_outside_kinds[&id].is_exported();
                 let op = &operands[0];
                 uwriteln!(self.src, "var {handle} = {op}.__handle.value;");
 
@@ -2070,7 +2058,8 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let id = dealias(self.r#gen.resolve, *ty);
                 let imported_function_prefix =
                     self.r#gen.runtime_exposed_resource_function_prefix(&id);
-                let is_exported = self.r#gen.r#gen.exported_resources.contains(&id);
+                // TODO fix
+                let is_exported = self.r#gen.r#gen.resource_outside_kinds[&id].is_exported();
                 let op = &operands[0];
                 let resource_type_name = self.r#gen.type_name(&Type::Id(*ty));
 
@@ -2552,6 +2541,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             }
 
             Instruction::CallInterface { func, async_ } => {
+                // TODO find a way to do find out the outside kind of the function we're generating for
+                //   we need to know this, so that we can call the correct resource constructor (either the generated one from the import, or the exported one thats defined here)
+
                 // TODO async
                 if *async_ {
                     unimplemented!("async unimplemented");
