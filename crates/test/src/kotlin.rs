@@ -189,6 +189,12 @@ impl LanguageMethods for Kotlin {
         &["--generate-stubs"]
     }
 
+    fn codegen_test_variants(&self) -> &[(&str, &[&str])] {
+        &[
+            ("visibility-internal", &["--declaration-visibility=internal"])
+        ]
+    }
+
     fn compile(&self, _runner: &Runner, _compile: &crate::Compile) -> Result<()> {
         bail!("compiling Kotlin to a wasm component is not yet supported")
     }
@@ -202,6 +208,9 @@ impl LanguageMethods for Kotlin {
         if config.error_context {
             return true;
         }
+
+        // generally, internal visbility shouldn't change anything about which tests we ignore
+        let name = name.trim_end_matches("-visibility-internal");
 
         if config.async_
             // Except these actually do work:
