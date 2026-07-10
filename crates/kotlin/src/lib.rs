@@ -1,4 +1,5 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use clap::ValueEnum;
 use heck::*;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -7,8 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::mem;
 use wit_bindgen_core::abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType};
 use wit_bindgen_core::{
-    dealias, uwrite, uwriteln, wit_parser::*, Direction, Files, InterfaceGenerator as _, Ns,
-    Source, WorldGenerator,
+    Direction, Files, InterfaceGenerator as _, Ns, Source, WorldGenerator, dealias, uwrite,
+    uwriteln, wit_parser::*,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -175,6 +176,14 @@ pub struct ResourceInfo {
     pub direction: Direction,
 }
 
+#[derive(clap::ValueEnum, Debug, Clone)]
+enum KotlinVisibility {
+    Public,
+    Internal,
+    Protected,
+    Private,
+}
+
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "clap", derive(clap::Args))]
 pub struct Opts {
@@ -192,6 +201,15 @@ pub struct Opts {
     /// Comma-separated list of package names
     #[cfg_attr(feature = "clap", arg(long, value_delimiter = ','))]
     pub kotlin_imports: Option<Vec<String>>,
+
+    /// Which visibility modifier should be prepended to the Kotlin declarations generated for the
+    /// corresponding WIT declarations. Does NOT influence the visibility of other helper
+    /// declarations that wit-bindgen generates to support the generated Kotlin code.
+    ///
+    /// NOTE that this will also influence the visibility of the generated export stubs, in order for
+    /// those to still compile: if they were still all public by default, they could expose e.g. internal
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub declaration_visibility: Option<KotlinVisibility>,
 }
 
 impl Opts {
@@ -210,6 +228,17 @@ impl Opts {
         let mut r = Kotlin::default();
         r.opts = self.clone();
         Box::new(r)
+    }
+
+    pub fn maybe_push_declaration_visibility_str(&self, src: &mut String) {
+        if let Some(visibility) = &self.declaration_visibility {
+            // use the underlying mut string, because there are no newlines/indentation here, so we are guaranteed to not accidentally reindent by using src directly
+            src.push_str(visibility.to_possible_value().unwrap().get_name());
+            src.push_str(" ");
+        }
+    }
+    pub fn maybe_push_declaration_visibility_src(&self, src: &mut Source) {
+        self.maybe_push_declaration_visibility_str(src.as_mut_string());
     }
 }
 
@@ -451,6 +480,8 @@ impl WorldGenerator for Kotlin {
             //       This is more important for the actual @WasmImport/@WasmExport annotations below
             //       The backslash just serves to escape it as a kotlin string, to prevent interpolation
             self.src.push_str("\n@WitInterface(\"\\$root\")\n");
+            self.opts
+                .maybe_push_declaration_visibility_src(&mut self.src);
             self.src.push_str(
                 format!("/*external */interface {kotlin_interface_name_for_world} {{\n").as_str(),
             );
@@ -565,6 +596,8 @@ impl WorldGenerator for Kotlin {
 
                     let self_export_stubs_src = self.export_stubs_src.as_mut_string();
 
+                    self.opts
+                        .maybe_push_declaration_visibility_str(self_export_stubs_src);
                     self_export_stubs_src.push_str(
                         format!(
                             "object {}Impl : {}.Exports {{",
@@ -869,9 +902,19 @@ impl Kotlin {
         // write to the raw string to avoid reindenting
         uwriteln!(
             self.src.as_mut_string(),
-            "@WitInterface(\"{wit_iface_name}\")\n/*external */interface {kotlin_name} {{\n{object_body}\n}}\n"
+            "@WitInterface(\"{wit_iface_name}\")"
         );
+
+        self.opts
+            .maybe_push_declaration_visibility_src(&mut self.src);
+        uwriteln!(
+            self.src.as_mut_string(),
+            "/*external */interface {kotlin_name} {{\n{object_body}\n}}\n"
+        );
+
         if outside_kind.is_exported() {
+            self.opts
+                .maybe_push_declaration_visibility_src(&mut self.export_stubs_src);
             uwriteln!(
                 self.export_stubs_src,
                 "object {kotlin_name}Impl : {kotlin_name} {{\n{exports_stubs_body}\n}}\n"
@@ -935,7 +978,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
     fn type_record(&mut self, _id: TypeId, name: &str, record: &Record, docs: &Docs) {
         self.src.push_str("\n");
-        self.src.push_str(kdoc(docs).as_str());
+        self.push_preamble_for_type(docs);
         self.src.push_str("class ");
         let name = name.to_upper_camel_case();
         self.src.push_str(&name);
@@ -1029,7 +1072,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             ));
         }
 
-        self.src.push_str(kdoc(docs).as_str());
+        self.push_preamble_for_type(docs);
         let class_kind: &str = match self.outside_kind {
             // TODO this first case is dead code for now
             OutsideKind::Both => "open class ", // -> need ability to implement the resource, but also to construct/use it
@@ -1180,7 +1223,10 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         uwriteln!(self.src, "");
 
         // these last two are implementation details, so fold them away
-        uwriteln!(self.src, "// <editor-fold defaultstate=\"collapsed\" desc=\"Implementation details\">");
+        uwriteln!(
+            self.src,
+            "// <editor-fold defaultstate=\"collapsed\" desc=\"Implementation details\">"
+        );
 
         // provide handle constructor if its an import
         if self.outside_kind.is_imported() {
@@ -1215,7 +1261,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
     fn type_flags(&mut self, _id: TypeId, name: &str, flags: &Flags, docs: &Docs) {
         self.src.push_str("\n");
-        self.src.push_str(kdoc(docs).as_str());
+        self.push_preamble_for_type(docs);
         self.src.push_str("value class ");
         let name = name.to_upper_camel_case();
         self.src.push_str(&name);
@@ -1282,7 +1328,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             variant_name.clone()
         };
 
-        self.src.push_str(kdoc(docs).as_str());
+        self.push_preamble_for_type(docs);
         self.src.push_str("sealed interface ");
         self.src.push_str(&variant_name);
         // don't use variant_name anymore (can't move above, because it's still needed here)
@@ -1312,7 +1358,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 
     fn type_enum(&mut self, _id: TypeId, name: &str, enum_: &Enum, docs: &Docs) {
         uwrite!(self.src, "\n");
-        self.src.push_str(kdoc(docs).as_str());
+        self.push_preamble_for_type(docs);
         self.src.push_str("enum class ");
         let name = name.to_upper_camel_case();
         self.src.push_str(&name);
@@ -1398,6 +1444,19 @@ impl InterfaceGenerator<'_> {
         } else {
             format!("{common_prefix}_import_{result}")
         };
+    }
+
+    fn push_preamble_for_type(&mut self, docs: &Docs) {
+        self.src.push_str(kdoc(docs).as_str());
+        // TODO look at this again once we decide whether world-import types should be top-level or not
+
+        // only add the visibility modifier if its a top-level type
+        // its a top level type iff the world reference to the interface is by name only iff the id is none
+        if self.referenced_interface.id.is_none() {
+            self.r#gen
+                .opts
+                .maybe_push_declaration_visibility_src(&mut self.src);
+        }
     }
 
     fn type_name(&self, ty: &Type) -> String {
