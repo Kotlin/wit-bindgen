@@ -46,7 +46,7 @@ impl KotlincWasm {
             .to_string();
         let path_to_outdir = self
             .path_to_tmpdir
-            .join("out")
+            .join(format!("out{}", unique_test_str))
             .to_str()
             .unwrap()
             .to_string();
@@ -283,9 +283,13 @@ impl LanguageMethods for Kotlin {
                 .to_path_buf(),
         );
 
-        // TODO for now I'm simply assuming the test names are unique
+        let filename = verify.wit_test.file_name().unwrap().to_str().unwrap();
+        let args = verify.args;
+
+        let unique_test_str = format!("{}_{}", filename, args.join("_"));
+
         kotlinc_wasm.compile(
-            verify.wit_test.file_stem().unwrap().to_str().unwrap(),
+            &*unique_test_str,
             &*files,
         )
     }
