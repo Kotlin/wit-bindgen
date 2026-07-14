@@ -202,13 +202,13 @@ pub struct Opts {
     #[cfg_attr(feature = "clap", arg(long, value_delimiter = ','))]
     pub kotlin_imports: Option<Vec<String>>,
 
-    /// Which visibility modifier should be prepended to the Kotlin declarations generated for the
-    /// corresponding WIT declarations. Does NOT influence the visibility of other helper
-    /// declarations that wit-bindgen generates to support the generated Kotlin code.
+    /// Which visibility modifier should be prepended to the Kotlin declarations generated for the corresponding WIT declarations.
     ///
-    /// NOTE that this will also influence the visibility of the generated export stubs, in order for
-    /// those to still compile: if they were still all public by default, they could expose e.g. internal
-    #[cfg_attr(feature = "clap", arg(long))]
+    /// NOTE that this will also influence:
+    /// - the visibility of the generated export stubs, in order for those to still compile,
+    ///   if they were still all public by default, they could expose e.g. internal visibility types
+    /// - the visibility of other helper declarations that wit-bindgen generates to support the generated Kotlin code.
+    #[cfg_attr(feature = "clap", arg(long, verbatim_doc_comment))]
     pub declaration_visibility: Option<KotlinVisibility>,
 }
 
@@ -603,7 +603,7 @@ impl WorldGenerator for Kotlin {
                             "object {}Impl : {}.Exports {{",
                             export_interface_kotlin_name, kotlin_interface_name_for_world
                         )
-                        .as_str(),
+                            .as_str(),
                     );
                     self_export_stubs_src.push_str(export_stubs_src);
                     self_export_stubs_src.push_str("}\n");
@@ -643,6 +643,26 @@ impl WorldGenerator for Kotlin {
         let mut write_component_support_kt = || {
             let mut support_kt_str = Source::default();
 
+            // NOTE both of these visibility variables end with a space in case they do contain a visibility
+
+            // overridden (user-defined) visiblity or empty
+            let user_vis_or_empty = if self.opts.declaration_visibility.is_some() {
+                let mut str =
+                    self.opts.declaration_visibility.as_mut().unwrap().to_possible_value().unwrap().get_name().to_string();
+                // add a space to the end, so that it looks clean in the output with either, e.g., "internal ", or ""
+                str.push(' ');
+                str
+            } else {
+                "".to_string()
+            };
+
+            // overridden (user-defined) visiblity or internal
+            let user_vis_or_internal = if user_vis_or_empty.is_empty() {
+                "internal ".to_string()
+            } else {
+                user_vis_or_empty.to_string()
+            };
+
             wit_bindgen_core::generated_preamble(&mut support_kt_str, version);
             uwriteln!(
                 support_kt_str,
@@ -653,9 +673,9 @@ impl WorldGenerator for Kotlin {
             {custom_kotlin_imports_declaration}
             import kotlin.wasm.unsafe.*
 
-            class ComponentException(val value: Any?) : Throwable()
+            {user_vis_or_empty}class ComponentException(val value: Any?) : Throwable()
 
-            sealed interface Option<out T> {{
+            {user_vis_or_empty}sealed interface Option<out T> {{
                 class Some<T2>(val value: T2) : Option<T2>
                 object None : Option<Nothing>
             }}
@@ -666,13 +686,13 @@ impl WorldGenerator for Kotlin {
             * 0 stands for a handle that does not own a rep in the RepTable.
             * This can either be a newly allocated handle, or one who's ownership was transferred out of the component in a canonical ABI owning-handle lower operation.
             */
-            internal value class ResourceHandle(internal val value: Int) {{
+            {user_vis_or_internal}value class ResourceHandle(internal val value: Int) {{
                 companion object {{
                     const val DOES_NOT_OWN_REP = 0
                 }}
             }}
 
-            abstract class WitResource: AutoCloseable{{
+            {user_vis_or_empty}abstract class WitResource: AutoCloseable{{
               internal var __handle: ResourceHandle
               internal constructor(handle: ResourceHandle) {{ __handle = handle }}
               // WIT resources are lazily added into the runtime (resource-new method) and RepTable, so initially, they don't own a rep
@@ -680,33 +700,33 @@ impl WorldGenerator for Kotlin {
             }}
 
             @WasmExport
-            fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
+            {user_vis_or_empty}fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
                 componentModelRealloc(ptr, oldSize, newSize)
 
-            fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
+            {user_vis_or_empty}fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
                 writeToLinearMemory(s.encodeToByteArray()).address.toInt()
 
-            fun STRING_FROM_MEM(addr: Int, len: Int): String =
+            {user_vis_or_empty}fun STRING_FROM_MEM(addr: Int, len: Int): String =
                 loadByteArray(addr.ptr, len).decodeToString()
 
-            fun MALLOC(size: Int, align: Int): Int = TODO()
+            {user_vis_or_empty}fun MALLOC(size: Int, align: Int): Int = TODO()
 
-            val Int.ptr: Pointer
+            {user_vis_or_empty}val Int.ptr: Pointer
                 get() = Pointer(this.toUInt())
 
-            fun Pointer.loadUByte(): UByte = loadByte().toUByte()
-            fun Pointer.loadUShort(): UShort = loadShort().toUShort()
-            fun Pointer.loadUInt(): UInt = loadInt().toUInt()
-            fun Pointer.loadULong(): ULong = loadLong().toULong()
+            {user_vis_or_empty}fun Pointer.loadUByte(): UByte = loadByte().toUByte()
+            {user_vis_or_empty}fun Pointer.loadUShort(): UShort = loadShort().toUShort()
+            {user_vis_or_empty}fun Pointer.loadUInt(): UInt = loadInt().toUInt()
+            {user_vis_or_empty}fun Pointer.loadULong(): ULong = loadLong().toULong()
 
-            internal fun MemoryAllocator.writeToLinearMemory(value: String): Pointer =
+            {user_vis_or_internal}fun MemoryAllocator.writeToLinearMemory(value: String): Pointer =
                 writeToLinearMemory(value.encodeToByteArray())
 
-            internal fun loadString(addr: Pointer, size: Int): String =
+            {user_vis_or_internal}fun loadString(addr: Pointer, size: Int): String =
                 loadByteArray(addr, size).decodeToString()
-            internal fun loadByteArray(addr: Pointer, size: Int): ByteArray =
+            {user_vis_or_internal}fun loadByteArray(addr: Pointer, size: Int): ByteArray =
                 ByteArray(size) {{ i -> (addr + i).loadByte() }}
-            internal fun MemoryAllocator.writeToLinearMemory(array: ByteArray): Pointer {{
+            {user_vis_or_internal}fun MemoryAllocator.writeToLinearMemory(array: ByteArray): Pointer {{
                 val pointer = allocate(array.size)
                 var currentPointer = pointer
                 array.forEach {{
@@ -717,12 +737,12 @@ impl WorldGenerator for Kotlin {
             }}
 
 
-            fun Pointer.loadFloat(): Float = Float.fromBits(loadInt())
-            fun Pointer.loadDouble(): Double = Double.fromBits(loadLong())
-            fun Pointer.storeFloat(value: Float) {{ storeInt(value.toRawBits()) }}
-            fun Pointer.storeDouble(value: Double) {{ storeLong(value.toRawBits()) }}
+            {user_vis_or_empty}fun Pointer.loadFloat(): Float = Float.fromBits(loadInt())
+            {user_vis_or_empty}fun Pointer.loadDouble(): Double = Double.fromBits(loadLong())
+            {user_vis_or_empty}fun Pointer.storeFloat(value: Float) {{ storeInt(value.toRawBits()) }}
+            {user_vis_or_empty}fun Pointer.storeDouble(value: Double) {{ storeLong(value.toRawBits()) }}
 
-            internal object RepTable {{
+            {user_vis_or_internal}object RepTable {{
                 private val list = mutableListOf<Any>();
                 private var firstVacant: Int? = null
                 private data class Vacant(var next: Int?)
@@ -758,8 +778,8 @@ impl WorldGenerator for Kotlin {
             }}
 
             // Annotations
-            annotation class WitInterface(val package_: String)
-            annotation class WitImport
+            {user_vis_or_empty}annotation class WitInterface(val package_: String)
+            {user_vis_or_empty}annotation class WitImport
             "
             );
 
@@ -767,7 +787,7 @@ impl WorldGenerator for Kotlin {
             tuple_counts.sort();
 
             for tup_size in tuple_counts {
-                uwrite!(support_kt_str, "class Tuple{tup_size}<");
+                uwrite!(support_kt_str, "{user_vis_or_empty}class Tuple{tup_size}<");
                 for i in 0..*tup_size {
                     uwrite!(support_kt_str, "T{i},");
                 }
@@ -1695,7 +1715,7 @@ impl InterfaceGenerator<'_> {
         );
         let name = self.kotlin_fun_name(func);
         // TODO the .tmp call introduces non-determinism when it actually solves naming conflicts, maybe try to change that
-        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}",));
+        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}", ));
         self.private_top_level_src
             .push_str("internal external fun ");
         self.private_top_level_src.push_str(&import_name);
@@ -1985,7 +2005,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                             WasmType::PointerOrI64 => "0L",
                             WasmType::Length => "0",
                         }
-                        .to_string(),
+                            .to_string(),
                     );
                 }
             }
@@ -2338,7 +2358,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         {none}}}
                     ",
                         )
-                        .as_str(),
+                            .as_str(),
                     );
                 } else {
                     self.src.push_str(
@@ -2350,7 +2370,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         {none}}}
                     "
                         )
-                        .as_str(),
+                            .as_str(),
                     );
                 }
             }
