@@ -404,7 +404,9 @@ impl WorldGenerator for Kotlin {
             self.opts.kotlin_package_name,
             Opts::SUPPORT_KT_SUBPACKAGE
         );
-        let optin_declaration = "@file:OptIn(kotlin.wasm.unsafe.UnsafeWasmMemoryApi::class, kotlin.wasm.ExperimentalWasmInterop::class, kotlin.wasm.unsafe.ComponentModelInternalApi::class)\n";
+        let file_prelude = "@file:OptIn(kotlin.wasm.unsafe.UnsafeWasmMemoryApi::class, kotlin.wasm.ExperimentalWasmInterop::class, kotlin.wasm.unsafe.ComponentModelInternalApi::class)
+@file:Suppress(\"REDUNDANT_ELSE_IN_WHEN\")\n";
+        // NOTE we generate redundant else branches sometimes to be defensive
         let custom_kotlin_package_declaration =
             format!("package {}\n", self.opts.kotlin_package_name);
         let custom_kotlin_imports_declaration = {
@@ -430,7 +432,7 @@ impl WorldGenerator for Kotlin {
         uwriteln!(
             kt_str,
             "
-            {optin_declaration}
+            {file_prelude}
             {custom_kotlin_package_declaration}
             {custom_kotlin_imports_declaration}
             import {support_kt_package}.*
@@ -628,7 +630,7 @@ impl WorldGenerator for Kotlin {
         uwriteln!(
             private_kt_str,
             "
-            {optin_declaration}
+            {file_prelude}
             {custom_kotlin_package_declaration}
             {custom_kotlin_imports_declaration}
             import {support_kt_package}.*
@@ -667,7 +669,7 @@ impl WorldGenerator for Kotlin {
             uwriteln!(
                 support_kt_str,
                 "
-            {optin_declaration}
+            {file_prelude}
             // NOTE: package name not finalized!
             package {support_kt_package}
             {custom_kotlin_imports_declaration}
