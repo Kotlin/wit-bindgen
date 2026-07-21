@@ -3,7 +3,7 @@ name: "*Kotlin-specific* wit-bindgen issue"
 about: Issue that relates specifically to the kotlin backend of this wit-bindgen fork
 title: ''
 labels: ''
-assignees: J-MR-T
+assignees: jmrtsh
 
 ---
 
