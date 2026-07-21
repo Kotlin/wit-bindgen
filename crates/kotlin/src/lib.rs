@@ -2557,6 +2557,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 let size_wasm32 = self.r#gen.r#gen.sizes.size(element).format("4"); // assuming 4 as the pointer size
                 let align_wasm32 = self.r#gen.r#gen.sizes.align(element).align_wasm32();
                 let address = self.locals.tmp("address");
+                let iter = self.locals.tmp("iter");
                 let index = self.locals.tmp("index");
 
                 // TODO think about wasm32 vs 64
@@ -2565,7 +2566,9 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     self.src,
                     "
                     val {address} = allocator.allocate({op}.size * {size_wasm32} /*, align_wasm32={align_wasm32}*/).address.toInt()
-                    for (({index}, el) in {op}.withIndex()) {{
+                    for ({iter} in {op}.withIndex()) {{
+                        val {index} = {iter}.index
+                        val el = {iter}.value
                         val base = {address} + ({index} * {size_wasm32})
                         {body}
                     }}
