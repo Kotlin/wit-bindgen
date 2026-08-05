@@ -210,6 +210,11 @@ pub struct Opts {
     /// - the visibility of other helper declarations that wit-bindgen generates to support the generated Kotlin code.
     #[cfg_attr(feature = "clap", arg(long, verbatim_doc_comment))]
     pub declaration_visibility: Option<KotlinVisibility>,
+
+    // TODO figure out a good "deprecation cycle" wrt this: we gradually want to make this the default, and remove the option of having it be false.
+    /// Generate cabi_realloc as a @WasmExport'ed function in ComponentSupport.kt
+    #[cfg_attr(feature = "clap", arg(long, default_value = "true", action = clap::ArgAction::Set))]
+    pub generate_cabi_realloc_export: bool,
 }
 
 impl Opts {
@@ -605,7 +610,7 @@ impl WorldGenerator for Kotlin {
                             "object {}Impl : {}.Exports {{",
                             export_interface_kotlin_name, kotlin_interface_name_for_world
                         )
-                            .as_str(),
+                        .as_str(),
                     );
                     self_export_stubs_src.push_str(export_stubs_src);
                     self_export_stubs_src.push_str("}\n");
@@ -649,8 +654,15 @@ impl WorldGenerator for Kotlin {
 
             // overridden (user-defined) visiblity or empty
             let user_vis_or_empty = if self.opts.declaration_visibility.is_some() {
-                let mut str =
-                    self.opts.declaration_visibility.as_mut().unwrap().to_possible_value().unwrap().get_name().to_string();
+                let mut str = self
+                    .opts
+                    .declaration_visibility
+                    .as_mut()
+                    .unwrap()
+                    .to_possible_value()
+                    .unwrap()
+                    .get_name()
+                    .to_string();
                 // add a space to the end, so that it looks clean in the output with either, e.g., "internal ", or ""
                 str.push(' ');
                 str
@@ -664,6 +676,19 @@ impl WorldGenerator for Kotlin {
             } else {
                 user_vis_or_empty.to_string()
             };
+
+            let cabi_realloc_export_declaration_or_nothing =
+                if self.opts.generate_cabi_realloc_export {
+                    format!(
+                        "
+                        @WasmExport
+                        {user_vis_or_empty}fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
+                            componentModelRealloc(ptr, oldSize, newSize)
+"
+                    )
+                } else {
+                    "".to_string()
+                };
 
             wit_bindgen_core::generated_preamble(&mut support_kt_str, version);
             uwriteln!(
@@ -701,9 +726,7 @@ impl WorldGenerator for Kotlin {
               protected constructor() {{ __handle = ResourceHandle(ResourceHandle.DOES_NOT_OWN_REP) }}
             }}
 
-            @WasmExport
-            {user_vis_or_empty}fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
-                componentModelRealloc(ptr, oldSize, newSize)
+            {cabi_realloc_export_declaration_or_nothing}
 
             {user_vis_or_empty}fun MemoryAllocator.STRING_TO_MEM(s: String): Int =
                 writeToLinearMemory(s.encodeToByteArray()).address.toInt()
@@ -1717,7 +1740,7 @@ impl InterfaceGenerator<'_> {
         );
         let name = self.kotlin_fun_name(func);
         // TODO the .tmp call introduces non-determinism when it actually solves naming conflicts, maybe try to change that
-        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}", ));
+        let import_name = self.r#gen.names.tmp(&format!("__wasm_import_{name}",));
         self.private_top_level_src
             .push_str("internal external fun ");
         self.private_top_level_src.push_str(&import_name);
@@ -2007,7 +2030,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                             WasmType::PointerOrI64 => "0L",
                             WasmType::Length => "0",
                         }
-                            .to_string(),
+                        .to_string(),
                     );
                 }
             }
@@ -2360,7 +2383,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         {none}}}
                     ",
                         )
-                            .as_str(),
+                        .as_str(),
                     );
                 } else {
                     self.src.push_str(
@@ -2372,7 +2395,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                         {none}}}
                     "
                         )
-                            .as_str(),
+                        .as_str(),
                     );
                 }
             }
