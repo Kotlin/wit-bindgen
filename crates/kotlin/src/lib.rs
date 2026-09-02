@@ -1825,6 +1825,51 @@ impl InterfaceGenerator<'_> {
         let FunctionBindgen { src, .. } = f;
         self.private_top_level_src.push_str(&src);
         self.private_top_level_src.push_str("}\n}\n");
+
+        // also check for post return function
+        // NOTE: right now, we don't need a post return function,
+        //       instead, we simply "free" the memory already at the end of the function, and
+        //       because the freed memory is not overwritten until it's accessed again, there's "no problem";
+        //       but obviously this is suboptimal.
+        //       For this reason, the function is commented out at runtime at the moment.
+        if abi::guest_export_needs_post_return(self.resolve, func) {
+            // the parameters of the post return function are the results of the normal function
+            // just give them p0 to p{n-1} names
+            let param_names: Vec<_> = (0..wasm_sig.results.len())
+                .map(|i| format!("p{i}"))
+                .collect();
+            let params_str = wasm_sig
+                .results
+                .iter()
+                .zip(param_names.iter())
+                .map(|(param, param_name)| {
+                    let ty = wasm_type(*param);
+                    format!("{param_name}: {ty}")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let mut bindgen = FunctionBindgen::new(self, "INVALID", func.kind.clone());
+
+            bindgen.params = param_names;
+
+            abi::post_return(bindgen.r#gen.resolve, func, &mut bindgen);
+
+            let postreturn_src = bindgen.src;
+
+            uwrite!(
+                self.private_top_level_src,
+                r#"
+                /* UNUSED
+                @kotlin.wasm.WasmExport("cabi_post_{export_name}")
+                fun cabi_post_{export_fun_name}({params_str}) {{
+                    {}
+                }}
+                */
+                "#,
+                postreturn_src.as_str()
+            );
+        }
     }
 
     // TODO once it works, migrate to new mangling
