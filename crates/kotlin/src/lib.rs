@@ -409,11 +409,9 @@ impl WorldGenerator for Kotlin {
             self.opts.kotlin_package_name,
             Opts::SUPPORT_KT_SUBPACKAGE
         );
-        let file_prelude = "@file:OptIn(kotlin.wasm.unsafe.UnsafeWasmMemoryApi::class, kotlin.wasm.ExperimentalWasmInterop::class, kotlin.wasm.unsafe.ComponentModelInternalApi::class)
+        let file_opt_ins = "@file:OptIn(kotlin.wasm.unsafe.UnsafeWasmMemoryApi::class, kotlin.wasm.ExperimentalWasmInterop::class, kotlin.wasm.unsafe.ComponentModelInternalApi::class)
 @file:Suppress(\"REDUNDANT_ELSE_IN_WHEN\")\n";
         // NOTE we generate redundant else branches sometimes to be defensive
-        let custom_kotlin_package_declaration =
-            format!("package {}\n", self.opts.kotlin_package_name);
         let custom_kotlin_imports_declaration = {
             // TODO maybe do backticks for package name?
             let mut kotlin_imports = String::new();
@@ -431,18 +429,20 @@ impl WorldGenerator for Kotlin {
             kotlin_imports
         };
 
+        let file_prelude = |package: &str| {
+            format!("
+                {file_opt_ins}
+                package {package}
+                {custom_kotlin_imports_declaration}
+                import {support_kt_package}.*
+                import kotlin.wasm.unsafe.componentModelRealloc
+            ")
+        };
+
         let mut kt_str = Source::default();
         wit_bindgen_core::generated_preamble(&mut kt_str, version);
 
-        uwriteln!(
-            kt_str,
-            "
-            {file_prelude}
-            {custom_kotlin_package_declaration}
-            {custom_kotlin_imports_declaration}
-            import {support_kt_package}.*
-            "
-        );
+        uwriteln!(kt_str, "{}", file_prelude(self.opts.kotlin_package_name.as_str()));
 
         // move generation plan out, so that we don't borrow from self twice
         let mut generation_plan = mem::take(&mut self.generation_plan);
@@ -632,15 +632,7 @@ impl WorldGenerator for Kotlin {
         let mut private_kt_str = Source::default();
         wit_bindgen_core::generated_preamble(&mut private_kt_str, version);
 
-        uwriteln!(
-            private_kt_str,
-            "
-            {file_prelude}
-            {custom_kotlin_package_declaration}
-            {custom_kotlin_imports_declaration}
-            import {support_kt_package}.*
-            "
-        );
+        uwriteln!(private_kt_str, "{}", file_prelude(self.opts.kotlin_package_name.as_str()));
         private_kt_str.push_str(&self.private_src);
         files.push(
             &format!("Internal{}.kt", world.name.to_upper_camel_case()),
@@ -677,28 +669,26 @@ impl WorldGenerator for Kotlin {
                 user_vis_or_empty.to_string()
             };
 
-            let cabi_realloc_export_declaration_or_nothing =
-                if self.opts.generate_cabi_realloc_export {
-                    format!(
+            let cabi_realloc_export_declaration_or_nothing = if self
+                .opts
+                .generate_cabi_realloc_export
+            {
+                format!(
                         "
                         @WasmExport
                         {user_vis_or_empty}fun cabi_realloc(ptr: Int, oldSize: Int, align: Int, newSize: Int): Int =
                             componentModelRealloc(ptr, oldSize, newSize)
 "
                     )
-                } else {
-                    "".to_string()
-                };
+            } else {
+                "".to_string()
+            };
 
             wit_bindgen_core::generated_preamble(&mut support_kt_str, version);
-            uwriteln!(
-                support_kt_str,
+            uwriteln!(support_kt_str, "{}", file_prelude(support_kt_package.as_str()));
+            uwriteln!(support_kt_str,
                 "
-            {file_prelude}
-            // NOTE: package name not finalized!
-            package {support_kt_package}
-            {custom_kotlin_imports_declaration}
-            import kotlin.wasm.unsafe.*
+                import kotlin.wasm.unsafe.*
 
             {user_vis_or_empty}class ComponentException(val value: Any?) : Throwable()
 
