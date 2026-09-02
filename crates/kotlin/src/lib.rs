@@ -177,11 +177,29 @@ pub struct ResourceInfo {
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
-enum KotlinVisibility {
+pub enum KotlinVisibility {
     Public,
     Internal,
     Protected,
     Private,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone)]
+pub enum CabiReallocFreeingStrategy {
+    /// Default: Always free all cabi_realloc memory whenever possible. This is the legacy style of
+    /// bindings-generation, which is incompatible with the WASI preview 1 adapter (see https://youtrack.jetbrains.com/issue/KT-86415).
+    FreeAll,
+    /// Only free cabi_realloc memory as allocated by the canonical ABI, instead of freeing
+    /// everything periodically. This is not supported by older Kotlin compiler versions (only
+    /// versions that https://youtrack.jetbrains.com/issue/KT-88998 lists as "Available in").
+    /// NOTE: this option is experimental!
+    FreeIndividually,
+}
+
+impl Default for CabiReallocFreeingStrategy {
+    fn default() -> Self {
+        CabiReallocFreeingStrategy::FreeAll
+    }
 }
 
 #[derive(Default, Debug, Clone)]
@@ -215,6 +233,9 @@ pub struct Opts {
     /// Generate cabi_realloc as a @WasmExport'ed function in ComponentSupport.kt
     #[cfg_attr(feature = "clap", arg(long, default_value = "true", action = clap::ArgAction::Set))]
     pub generate_cabi_realloc_export: bool,
+
+    #[cfg_attr(feature = "clap", arg(long, default_value = "free-all"))]
+    pub cabi_realloc_freeing_strategy: CabiReallocFreeingStrategy,
 }
 
 impl Opts {
@@ -1798,7 +1819,9 @@ impl InterfaceGenerator<'_> {
             _ => unimplemented!("multi-value return not supported"),
         }
         s.push_str(" {\n");
-        s.push_str("kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory()\n");
+        if let CabiReallocFreeingStrategy::FreeAll = f.r#gen.r#gen.opts.cabi_realloc_freeing_strategy {
+            s.push_str("kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory()\n");
+        }
         s.push_str("kotlin.wasm.unsafe.withScopedMemoryAllocator { allocator ->\n");
         // because the line doesn't perfectly end with a {, need to manually increase the indent
         s.indent(1);
@@ -2602,10 +2625,15 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::StringLift { .. } => {
                 let ptr = &operands[0];
                 let len = &operands[1];
-                results.push(format!(
-                    "{}({ptr}, {len})",
-                    self.r#gen.r#gen.opts.support_package_fqn("STRING_FROM_MEM")
-                ));
+                if let CabiReallocFreeingStrategy::FreeIndividually = self.r#gen.r#gen.opts.cabi_realloc_freeing_strategy {
+                    results.push(format!(
+                        // also free the memory allocated by the host for the string
+                        "{}({ptr}, {len}).also{{\ncomponentModelRealloc({ptr}, {len}, 0)\n}}",
+                        self.r#gen.r#gen.opts.support_package_fqn("STRING_FROM_MEM")
+                    ));
+                }else{
+                    results.push(format!("{}({ptr}, {len})", self.r#gen.r#gen.opts.support_package_fqn("STRING_FROM_MEM")));
+                }
             }
 
             Instruction::ListLower { element, .. } => {
@@ -2662,7 +2690,12 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     "
                 );
 
-                results.push(list);
+                // also free the memory allocated by the host for the list
+                if let CabiReallocFreeingStrategy::FreeIndividually = self.r#gen.r#gen.opts.cabi_realloc_freeing_strategy {
+                    results.push(format!("{list}.also{{\ncomponentModelRealloc({address}, {length} * {size_wasm32}, 0)\n}}"));
+                }else{
+                    results.push(list);
+                }
             }
             // TODO(Kotlin): Reserve this names
             Instruction::IterElem { .. } => results.push("el".to_string()),
@@ -2689,9 +2722,11 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     self.src.push_str(op);
                 }
                 self.src.push_str(")\n");
-                self.src.push_str(
-                    "kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory();\n",
-                );
+                if let CabiReallocFreeingStrategy::FreeAll = self.r#gen.r#gen.opts.cabi_realloc_freeing_strategy {
+                    self.src.push_str(
+                        "kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory();\n",
+                    );
+                }
             }
 
             Instruction::CallInterface { func, async_ } => {
