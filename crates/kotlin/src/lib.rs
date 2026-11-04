@@ -184,7 +184,7 @@ pub enum KotlinVisibility {
     Private,
 }
 
-#[derive(clap::ValueEnum, Debug, Clone)]
+#[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
 pub enum CabiReallocFreeingStrategy {
     /// Default: Always free all cabi_realloc memory whenever possible. This is the legacy style of
     /// bindings-generation, which is incompatible with the WASI preview 1 adapter (see https://youtrack.jetbrains.com/issue/KT-86415).
@@ -229,7 +229,8 @@ pub struct Opts {
     #[cfg_attr(feature = "clap", arg(long, verbatim_doc_comment))]
     pub declaration_visibility: Option<KotlinVisibility>,
 
-    // TODO figure out a good "deprecation cycle" wrt this: we gradually want to make this the default, and remove the option of having it be false.
+    // TODO #21: flip defaults here
+
     /// Generate cabi_realloc as a @WasmExport'ed function in ComponentSupport.kt
     #[cfg_attr(feature = "clap", arg(long, default_value = "true", action = clap::ArgAction::Set))]
     pub generate_cabi_realloc_export: bool,
@@ -1820,7 +1821,7 @@ impl InterfaceGenerator<'_> {
         }
         s.push_str(" {\n");
         if let CabiReallocFreeingStrategy::FreeAll = f.r#gen.r#gen.opts.cabi_realloc_freeing_strategy {
-            s.push_str("kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory()\n");
+            s.push_str("@Suppress(\"DEPRECATION\")\nkotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory()\n");
         }
         s.push_str("kotlin.wasm.unsafe.withScopedMemoryAllocator { allocator ->\n");
         // because the line doesn't perfectly end with a {, need to manually increase the indent
@@ -2724,7 +2725,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 self.src.push_str(")\n");
                 if let CabiReallocFreeingStrategy::FreeAll = self.r#gen.r#gen.opts.cabi_realloc_freeing_strategy {
                     self.src.push_str(
-                        "kotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory();\n",
+                        "@Suppress(\"DEPRECATION\")\nkotlin.wasm.unsafe.freeAllComponentModelReallocAllocatedMemory();\n",
                     );
                 }
             }
