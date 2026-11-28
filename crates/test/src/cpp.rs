@@ -41,18 +41,12 @@ impl LanguageMethods for Cpp {
 
     fn should_fail_verify(
         &self,
-        name: &str,
-        config: &crate::config::WitConfig,
+        _runner: &Runner,
+        _name: &str,
+        _config: &crate::config::WitConfig,
         _args: &[String],
     ) -> bool {
-        // Compiles on C++ despite the blanket async exclusion below.
-        if name == "issue-1598.wit" {
-            return false;
-        }
-        return match name {
-            "issue1514-6.wit" | "named-fixed-length-list.wit" | "map.wit" => true,
-            _ => false,
-        } || config.async_;
+        false
     }
 
     fn prepare(&self, runner: &mut Runner) -> anyhow::Result<()> {
@@ -147,6 +141,7 @@ impl LanguageMethods for Cpp {
 
         // Now compile the runner's source code to with the above object and the
         // component-type object into a final component.
+        let output = compile.output.with_extension("core.wasm");
         let mut cmd = Command::new(compiler);
         cmd.arg(&compile.component.path)
             .arg(&bindings_object)
@@ -169,12 +164,17 @@ impl LanguageMethods for Cpp {
             .arg("-std=c++20")
             .arg("-g")
             .arg("-o")
-            .arg(&compile.output);
+            .arg(&output);
         for flag in Vec::from(config.cflags) {
             cmd.arg(flag);
         }
         cmd.arg("-mexec-model=reactor");
+        cmd.arg("-Wl,--skip-wit-component");
         runner.run_command(&mut cmd)?;
+
+        runner
+            .convert_core_module_to_component(&output, compile)
+            .with_context(|| format!("failed to convert {output:?}"))?;
         Ok(())
     }
 
@@ -206,6 +206,7 @@ impl LanguageMethods for Cpp {
         .arg("-c")
         .arg("-o")
         .arg(verify.artifacts_dir.join("tmp.o"));
-        runner.run_command(&mut cmd)
+        runner.run_command(&mut cmd)?;
+        Ok(())
     }
 }

@@ -52,20 +52,19 @@ impl LanguageMethods for C {
 
     fn should_fail_verify(
         &self,
+        _runner: &Runner,
         name: &str,
         config: &crate::config::WitConfig,
         _args: &[String],
     ) -> bool {
-        config.error_context
-            || name.starts_with("named-fixed-length-list.wit")
-            || name.starts_with("map.wit")
+        config.error_context || name.starts_with("named-fixed-length-list.wit")
     }
 
     fn codegen_test_variants(&self) -> &[(&str, &[&str])] {
         &[
             ("no-sig-flattening", &["--no-sig-flattening"]),
             ("autodrop", &["--autodrop-borrows=yes"]),
-            ("async", &["--async=all"]),
+            ("sync", &["--sync=all"]),
         ]
     }
 
@@ -79,6 +78,35 @@ impl LanguageMethods for C {
 
     fn verify(&self, runner: &Runner, v: &Verify<'_>) -> Result<()> {
         verify(runner, v, clang(runner))
+    }
+
+    fn generate_bindings_prepare(
+        &self,
+        _runner: &Runner,
+        bindgen: &crate::Bindgen,
+        dir: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        let mut export_header_dir = bindgen.wit_path.clone();
+        export_header_dir.pop();
+        export_header_dir.push("c");
+
+        // copy custom header files to target dir
+        if export_header_dir.is_dir() {
+            if !dir.exists() {
+                std::fs::create_dir_all(dir).context("failed to create bindings dir")?;
+            }
+            for entry in export_header_dir
+                .read_dir()
+                .context("failed to read test header directory")?
+            {
+                let entry = entry.context("failed to read test header directory entry")?;
+                let path = entry.path();
+                let mut dest = PathBuf::from(dir);
+                dest.push(path.file_name().unwrap());
+                std::fs::copy(path, dest).context("failed to copy header file")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -159,7 +187,7 @@ fn compile(runner: &Runner, compile: &Compile<'_>, compiler: PathBuf) -> Result<
     runner.run_command(&mut cmd)?;
 
     runner
-        .convert_p1_to_component(&output, compile)
+        .convert_core_module_to_component(&output, compile)
         .with_context(|| format!("failed to convert {output:?}"))?;
     Ok(())
 }
@@ -188,5 +216,6 @@ fn verify(runner: &Runner, verify: &Verify<'_>, compiler: PathBuf) -> Result<()>
     .arg("-c")
     .arg("-o")
     .arg(verify.artifacts_dir.join("tmp.o"));
-    runner.run_command(&mut cmd)
+    runner.run_command(&mut cmd)?;
+    Ok(())
 }

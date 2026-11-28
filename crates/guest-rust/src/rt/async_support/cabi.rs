@@ -43,29 +43,73 @@
 //!
 //! Additionally for now this file is serving as documentation of this
 //! interface.
+//!
+//! # Revisions
+//!
+//! This interface is intended to be evolvable over time if needed. Notably the
+//! original task structure, `wasip3_task`, has a `version` field where certain
+//! version levels imply the existence of certain fields. The historical
+//! revisions are:
+//!
+//! ### V1
+//!
+//! This was the original version. This is the original specification of
+//! `wasip3_task_set` and `wasip3_task`.
+//!
+//! ### V2
+//!
+//! This was added 2026-06-17 in response to #1618. This added
+//! `wasip3_task_v2` and `wasip3_task_vtable`. This version enables cloning a
+//! task to create a strong reference to it independent of the stack lifetime
+//! that `wasip3_task_set` is required to uphold. This necessitated introducing
+//! `clone` and `drop` callbacks to manage the lifetime of this reference.
+//! While doing this everything was moved into a vtable structure instead of
+//! inline in `wasip3_task` to make it easier to add more function pointers
+//! in the future if necessary.
+//!
+//! ### V3
+//!
+//! This was added 2026-09-25 in response to #1305 to get `spawn_local` working
+//! across versions of `wit-bindgen`. This added a new entry to the vtable below
+//! with a new v3 version of the structure.
 
+use alloc::boxed::Box;
 use core::ffi::c_void;
 
-extern_wasm! {
-    unsafe extern "C" {
-        /// Sets the global task pointer to `ptr` provided. Returns the previous
-        /// value.
-        ///
-        /// This function acts as a dual getter and a setter. To get the
-        /// current task pointer a dummy `ptr` can be provided (e.g. NULL) and then
-        /// it's passed back when you're done working with it. When setting the
-        /// current task pointer it's recommended to call this and then call it
-        /// again with the previous value when the tasks's work is done.
-        ///
-        /// For executors they need to ensure that the `ptr` passed in lives for
-        /// the entire lifetime of the component model task.
-        pub fn wasip3_task_set(ptr: *mut wasip3_task) -> *mut wasip3_task;
-    }
+#[cfg(target_family = "wasm")]
+unsafe extern "C" {
+    /// Sets the global task pointer to `ptr` provided. Returns the previous
+    /// value.
+    ///
+    /// This function acts as a dual getter and a setter. To get the
+    /// current task pointer a dummy `ptr` can be provided (e.g. NULL) and then
+    /// it's passed back when you're done working with it. When setting the
+    /// current task pointer it's recommended to call this and then call it
+    /// again with the previous value when the tasks's work is done.
+    ///
+    /// For executors they need to ensure that the `ptr` passed in lives for
+    /// the entire lifetime of the component model task.
+    pub fn wasip3_task_set(ptr: *mut wasip3_task) -> *mut wasip3_task;
+}
+
+/// Native counterpart of the C-defined `wasip3_task_set` above. Uses
+/// thread-local storage so multiple threads can poll async exports concurrently
+/// without interfering. Note that unlike the weak C symbol on wasm, each
+/// version of `wit-bindgen` has its own thread-local slot here.
+#[cfg(not(target_family = "wasm"))]
+pub unsafe fn wasip3_task_set(ptr: *mut wasip3_task) -> *mut wasip3_task {
+    use core::cell::Cell;
+    std::thread_local!(
+        static CURRENT: Cell<*mut wasip3_task> = const { Cell::new(core::ptr::null_mut()) }
+    );
+    CURRENT.with(|current| current.replace(ptr))
 }
 
 /// The first version of `wasip3_task` which implies the existence of the
 /// fields `ptr`, `waitable_register`, and `waitable_unregister`.
 pub const WASIP3_TASK_V1: u32 = 1;
+pub const WASIP3_TASK_V2: u32 = 2;
+pub const WASIP3_TASK_V3: u32 = 3;
 
 /// Indirect "vtable" used to connect imported functions and exported tasks.
 /// Executors (e.g. exported functions) define and manage this while imports
@@ -80,6 +124,48 @@ pub struct wasip3_task {
     /// below as the first argument.
     pub ptr: *mut c_void,
 
+    /// See `wasip3_task_vtable::waitable_register`.
+    pub waitable_register: unsafe extern "C" fn(
+        ptr: *mut c_void,
+        waitable: u32,
+        callback: unsafe extern "C" fn(callback_ptr: *mut c_void, code: u32),
+        callback_ptr: *mut c_void,
+    ) -> *mut c_void,
+
+    /// See `wasip3_task_vtable::waitable_unregister`.
+    pub waitable_unregister: unsafe extern "C" fn(ptr: *mut c_void, waitable: u32) -> *mut c_void,
+}
+
+unsafe impl Send for wasip3_task {}
+unsafe impl Sync for wasip3_task {}
+
+/// Representation when `wasip3_task::version` is `WASIP3_TASK_V2`.
+#[repr(C)]
+pub struct wasip3_task_v2 {
+    /// The original task structure.
+    pub v1: wasip3_task,
+
+    /// An always-valid pointer to a list of function pointers, described
+    /// below.
+    pub vtable: &'static wasip3_task_vtable,
+}
+
+/// Representation when `wasip3_task::version` is `WASIP3_TASK_V3`.
+#[repr(C)]
+pub struct wasip3_task_v3 {
+    /// The original task structure.
+    pub v1: wasip3_task,
+
+    /// An always-valid pointer to a list of function pointers, described
+    /// below.
+    pub vtable: &'static wasip3_task_vtable_v3,
+}
+
+/// Function pointer operations that can operate on `wasip3_task::ptr`.
+///
+/// This was introduced in the "v2" ABI and is a member of `wasip3_task_v2`.
+#[repr(C)]
+pub struct wasip3_task_vtable {
     /// Register a new `waitable` for this exported task.
     ///
     /// This exported task will add `waitable` to its `waitable-set`. When it
@@ -104,4 +190,35 @@ pub struct wasip3_task {
     /// Returns the `callback_ptr` passed to `waitable_register` if present, or
     /// `NULL` if it's not present.
     pub waitable_unregister: unsafe extern "C" fn(ptr: *mut c_void, waitable: u32) -> *mut c_void,
+
+    /// Clones this task's pointer to create a separately owned pointer which
+    /// can be persisted outside the stack frame that this is being used
+    /// within.
+    ///
+    /// Cloned values must be dropped/deallocated with `drop` below.
+    pub clone: unsafe extern "C" fn(ptr: *mut c_void) -> *mut c_void,
+
+    /// Drops and deallocates the provided pointer previously created by a
+    /// call to the `clone` callback above.
+    ///
+    /// This must not be called on the `ptr` value within `wasip3_task::ptr` as
+    /// that's not managed with this lifetime.
+    pub drop: unsafe extern "C" fn(ptr: *mut c_void),
+}
+
+/// Function pointer operations that can operate on `wasip3_task::ptr`.
+///
+/// This was introduced in the "v3" ABI and is a member of `wasip3_task_v3`.
+#[repr(C)]
+pub struct wasip3_task_vtable_v3 {
+    pub v2: wasip3_task_vtable,
+
+    /// Optionally-specified hook to spawn a rust future as a task.
+    ///
+    /// This takes the `task.ptr` field as the first argument and the
+    /// task-to-spawn as the second argument. This is Rust-specific and hence
+    /// uses the "Rust" ABI. This additionally is optionally specified because
+    /// not all versions of `wit-bindgen` have support for spawning (it's a
+    /// crate feature).
+    pub rust_spawn: Option<unsafe fn(ptr: *mut c_void, Box<dyn Future<Output = ()>>)>,
 }

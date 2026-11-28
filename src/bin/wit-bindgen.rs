@@ -74,6 +74,15 @@ enum Opt {
         args: Common,
     },
 
+    /// Generates bindings for D guest modules.
+    #[cfg(feature = "d")]
+    D {
+        #[clap(flatten)]
+        opts: wit_bindgen_d::Opts,
+        #[clap(flatten)]
+        args: Common,
+    },
+
     #[cfg(feature = "kotlin")]
     Kotlin {
         #[clap(flatten)]
@@ -158,6 +167,8 @@ fn main() -> Result<()> {
         Opt::Go { opts, args } => (opts.build(), args),
         #[cfg(feature = "csharp")]
         Opt::Csharp { opts, args } => (opts.build(), args),
+        #[cfg(feature = "d")]
+        Opt::D { opts, args } => (opts.build(args.out_dir.as_ref()), args),
         #[cfg(feature = "kotlin")]
         Opt::Kotlin { opts, args } => (opts.build(), args),
         Opt::Test { opts } => return opts.run(std::env::args_os().nth(0).unwrap().as_ref()),

@@ -36,6 +36,7 @@ impl LanguageMethods for Csharp {
 
     fn should_fail_verify(
         &self,
+        _runner: &Runner,
         name: &str,
         _config: &crate::config::WitConfig,
         _args: &[String],
@@ -49,7 +50,6 @@ impl LanguageMethods for Csharp {
                 | "import-export-resource.wit"
                 | "issue-1433.wit"
                 | "named-fixed-length-list.wit"
-                | "map.wit"
         )
     }
 
@@ -144,6 +144,7 @@ impl LanguageMethods for Csharp {
             .arg(&wasm_filename);
         runner.run_command(&mut cmd)?;
 
-        runner.run_command(dotnet().current_dir(&dir).arg("clean"))
+        runner.run_command(dotnet().current_dir(&dir).arg("clean"))?;
+        Ok(())
     }
 }

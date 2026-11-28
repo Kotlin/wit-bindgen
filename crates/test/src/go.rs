@@ -7,6 +7,22 @@ use std::process::Command;
 
 pub struct Go;
 
+/// Go-specific state, stored in `Runner`, detected during `prepare`.
+pub struct State {
+    /// Whether the Go toolchain in use supports the `runtime.wasiOnIdle` hook
+    /// required for component model async support.
+    async_supported: bool,
+}
+
+impl Runner {
+    fn go_async_supported(&self) -> bool {
+        self.go_state
+            .as_ref()
+            .map(|s| s.async_supported)
+            .unwrap_or(false)
+    }
+}
+
 impl LanguageMethods for Go {
     fn display(&self) -> &str {
         "go"
@@ -18,23 +34,64 @@ impl LanguageMethods for Go {
 
     fn should_fail_verify(
         &self,
+        runner: &Runner,
         name: &str,
         config: &crate::config::WitConfig,
-        _args: &[String],
+        args: &[String],
     ) -> bool {
-        // TODO: We _do_ support async, but only with a build of Go that has
-        // [this
-        // patch](https://github.com/dicej/go/commit/40fc123d5bce6448fc4e4601fd33bad4250b36a5).
-        // Once we upstream something equivalent, we can remove the ` || name ==
-        // "async-trait-function.wit"` here.
-        config.error_context
-            || name == "async-trait-function.wit"
-            || name == "named-fixed-length-list.wit"
-            || name == "issue-1598.wit"
+        if config.error_context {
+            return true;
+        }
+        if name.starts_with("named-fixed-length-list.wit") {
+            return true;
+        }
+        if !runner.go_async_supported() {
+            // The `--pkg-name` (library) verify path runs `go build ./...`
+            // with no link step, so the missing `runtime.wasiOnIdle` symbol
+            // never causes a failure and these tests compile fine even on an
+            // unpatched toolchain. Only the c-shared (non-pkg) path fails.
+            let pkg_mode = args.iter().any(|a| a == "--pkg-name");
+            if !pkg_mode {
+                return name.starts_with("async-trait-function.wit")
+                    || name.starts_with("issue-1598.wit");
+            }
+        }
+
+        false
+    }
+
+    fn should_fail_compile(
+        &self,
+        runner: &Runner,
+        path: &Path,
+        config: &crate::config::WitConfig,
+    ) -> bool {
+        // This test, even though it's part of async, compiles on any
+        // toolchain.
+        if path.ends_with("incomplete-writes/leaf.go") {
+            return false;
+        }
+
+        // Bindings for async tests rely on `runtime.wasiOnIdle` (see `prepare`
+        // below) and fail to link without a toolchain that provides it.
+        if !runner.go_async_supported() {
+            return config.async_;
+        }
+
+        false
     }
 
     fn default_bindgen_args_for_codegen(&self) -> &[&str] {
         &["--generate-stubs"]
+    }
+
+    fn codegen_test_variants(&self) -> &[(&str, &[&str])] {
+        // Also run every codegen fixture through the `--pkg` library layout
+        // (imports/, exports/ subdirectories). `wit_component` matches the
+        // module name written by `replace_bindings_go_mod`, so the generated
+        // `wit_component/imports/...` and `wit_component/exports/...` import
+        // paths resolve against that go.mod.
+        &[("pkg-name", &["--pkg-name", "wit_component"])]
     }
 
     fn prepare(&self, runner: &mut Runner) -> Result<()> {
@@ -56,7 +113,45 @@ impl LanguageMethods for Go {
                 .arg("build")
                 .arg("-buildmode=c-shared")
                 .arg("-ldflags=-checklinkname=0"),
-        )
+        )?;
+
+        // Component model async support requires a `runtime.wasiOnIdle` hook
+        // which, as of the time of this writing, is only available in a
+        // patched build of Go. Detect whether the toolchain in use has
+        // this hook by building a program that links against it, and if not
+        // then async tests are expected to fail to build.
+        println!("Testing if `go` supports `runtime.wasiOnIdle`...");
+        let probe_dir = dir.join("wasi-on-idle-probe");
+        super::write_if_different(
+            &probe_dir.join("main.go"),
+            r#"package main
+
+import _ "unsafe"
+
+//go:linkname wasiOnIdle runtime.wasiOnIdle
+func wasiOnIdle(callback func() bool)
+func init() { defer wasiOnIdle(func() bool { return false }) }
+func main() {}
+"#,
+        )?;
+        super::write_if_different(&probe_dir.join("go.mod"), "module probe\n\ngo 1.25")?;
+        let async_supported = runner
+            .run_command(
+                Command::new("go")
+                    .current_dir(&probe_dir)
+                    .env("GOOS", "wasip1")
+                    .env("GOARCH", "wasm")
+                    .arg("build")
+                    .arg("-o")
+                    .arg("probe.wasm")
+                    .arg("-buildmode=c-shared")
+                    .arg("-ldflags=-checklinkname=0"),
+            )
+            .is_ok();
+        println!("`runtime.wasiOnIdle` supported: {async_supported}");
+        runner.go_state = Some(State { async_supported });
+
+        Ok(())
     }
 
     fn compile(&self, runner: &Runner, compile: &Compile<'_>) -> Result<()> {
@@ -94,7 +189,7 @@ impl LanguageMethods for Go {
                 .arg("-ldflags=-checklinkname=0"),
         )?;
 
-        runner.convert_p1_to_component(&output, compile)?;
+        runner.convert_core_module_to_component(&output, compile)?;
 
         Ok(())
     }
@@ -102,17 +197,34 @@ impl LanguageMethods for Go {
     fn verify(&self, runner: &Runner, verify: &Verify<'_>) -> Result<()> {
         replace_bindings_go_mod(runner, verify.bindings_dir)?;
 
+        // `go vet`
         runner.run_command(
             Command::new("go")
-                .current_dir(verify.bindings_dir)
-                .env("GOOS", "wasip1")
-                .env("GOARCH", "wasm")
-                .arg("build")
-                .arg("-o")
+                .current_dir(&verify.bindings_dir)
+                .arg("vet")
+                .arg("-unsafeptr=false")
+                .arg("./..."),
+        )?;
+
+        // `go build`. In `--pkg` (library) mode there is no main package in the
+        // bindings root, so `-buildmode=c-shared` on the current directory fails.
+        // Instead compile every subpackage with `./...`.
+        let pkg_mode = verify.args.iter().any(|a| a == "--pkg-name");
+        let mut cmd = Command::new("go");
+        cmd.current_dir(verify.bindings_dir)
+            .env("GOOS", "wasip1")
+            .env("GOARCH", "wasm")
+            .arg("build");
+        if pkg_mode {
+            cmd.arg("./...");
+        } else {
+            cmd.arg("-o")
                 .arg(verify.artifacts_dir.join("tmp.wasm"))
                 .arg("-buildmode=c-shared")
-                .arg("-ldflags=-checklinkname=0"),
-        )
+                .arg("-ldflags=-checklinkname=0");
+        }
+        runner.run_command(&mut cmd)?;
+        Ok(())
     }
 }
 
