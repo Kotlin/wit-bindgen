@@ -1,5 +1,6 @@
-use anyhow::bail;
+use anyhow::{Result, bail};
 use heck::{ToPascalCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
+use indexmap::{IndexMap, IndexSet};
 use std::{
     collections::{HashMap, HashSet},
     fmt::{self, Display, Write as FmtWrite},
@@ -8,21 +9,22 @@ use std::{
     process::{Command, Stdio},
     str::FromStr,
 };
-use symbol_name::{make_external_component, make_external_symbol};
 use wit_bindgen_c::to_c_ident;
 use wit_bindgen_core::{
-    Files, InterfaceGenerator, Source, Types, WorldGenerator,
+    AsyncFilterSet, Files, InterfaceGenerator, Source, Types, WorldGenerator,
     abi::{self, AbiVariant, Bindgen, Bitcast, LiftLower, WasmSignature, WasmType},
-    name_package_module, uwrite, uwriteln,
+    name_package_module,
+    symbol_name::{make_external_component, make_external_symbol},
+    uwrite, uwriteln,
     wit_parser::{
         Alignment, ArchitectureSize, Docs, Function, FunctionKind, Handle, Int, InterfaceId, Param,
         Resolve, SizeAlign, Stability, Type, TypeDef, TypeDefKind, TypeId, TypeOwner, WorldId,
-        WorldKey,
+        WorldItem, WorldKey,
     },
 };
+use wit_parser::TypeIdVisitor;
 
 // mod wamr;
-mod symbol_name;
 
 pub const RESOURCE_IMPORT_BASE_CLASS_NAME: &str = "ResourceImportBase";
 pub const RESOURCE_EXPORT_BASE_CLASS_NAME: &str = "ResourceExportBase";
@@ -77,6 +79,27 @@ struct Includes {
     needs_array: bool,
 }
 
+impl Includes {
+    fn merge(&mut self, other: &Includes) {
+        self.needs_vector |= other.needs_vector;
+        self.needs_expected |= other.needs_expected;
+        self.needs_string |= other.needs_string;
+        self.needs_string_view |= other.needs_string_view;
+        self.needs_optional |= other.needs_optional;
+        self.needs_cstring |= other.needs_cstring;
+        self.needs_imported_resources |= other.needs_imported_resources;
+        self.needs_exported_resources |= other.needs_exported_resources;
+        self.needs_variant |= other.needs_variant;
+        self.needs_tuple |= other.needs_tuple;
+        self.needs_assert |= other.needs_assert;
+        self.needs_bit |= other.needs_bit;
+        self.needs_span |= other.needs_span;
+        self.needs_wit |= other.needs_wit;
+        self.needs_memory |= other.needs_memory;
+        self.needs_array |= other.needs_array;
+    }
+}
+
 #[derive(Default)]
 struct SourceWithState {
     src: Source,
@@ -96,12 +119,17 @@ struct Cpp {
     h_src: SourceWithState,
     c_src_head: Source,
     extern_c_decls: Source,
+    vtable_decls: Source,
+    future_vtables: HashSet<String>,
+    stream_vtables: HashSet<String>,
     dependencies: Includes,
     includes: Vec<String>,
     world: String,
     world_id: Option<WorldId>,
     imported_interfaces: HashSet<InterfaceId>,
+    instance_names: HashMap<InterfaceId, String>,
     user_class_files: HashMap<String, String>,
+    user_class_includes: Vec<String>,
     defined_types: HashSet<(Vec<String>, String)>,
     types: Types,
 
@@ -182,6 +210,10 @@ pub struct Opts {
     /// `k1=v1,k2=v2`.
     #[cfg_attr(feature = "clap", arg(long, value_parser = parse_with, value_delimiter = ','))]
     pub with: Vec<(String, String)>,
+
+    /// Functions that are not using async will be using synchronous calls
+    #[cfg_attr(feature = "clap", clap(flatten))]
+    pub async_: AsyncFilterSet,
 }
 
 /// Supported API styles for the generated bindings.
@@ -281,6 +313,17 @@ impl Cpp {
         Cpp::default()
     }
 
+    fn update_instance_name(&mut self, resolve: &Resolve, name: &WorldKey, id: InterfaceId) {
+        match name {
+            WorldKey::Name(instance) if resolve.interfaces[id].name.is_some() => {
+                self.instance_names.insert(id, instance.clone());
+            }
+            _ => {
+                self.instance_names.remove(&id);
+            }
+        }
+    }
+
     pub fn is_first_definition(&mut self, ns: &Vec<String>, name: &str) -> bool {
         let owned = (ns.to_owned(), name.to_owned());
         if !self.defined_types.contains(&owned) {
@@ -311,17 +354,35 @@ impl Cpp {
             })
     }
 
+    pub fn is_async(
+        &mut self,
+        resolve: &Resolve,
+        interface: Option<&WorldKey>,
+        func: &Function,
+        is_import: bool,
+    ) -> bool {
+        matches!(
+            func.kind,
+            FunctionKind::AsyncFreestanding
+                | FunctionKind::AsyncMethod(_)
+                | FunctionKind::AsyncStatic(_)
+        ) || self
+            .opts
+            .async_
+            .is_async(resolve, interface, func, is_import)
+    }
+
     fn interface<'a>(
         &'a mut self,
         resolve: &'a Resolve,
         name: Option<&'a WorldKey>,
         in_guest_import: bool,
         wasm_import_module: Option<String>,
-    ) -> CppInterfaceGenerator<'a> {
+    ) -> Result<CppInterfaceGenerator<'a>> {
         let mut sizes = SizeAlign::default();
-        sizes.fill(resolve);
+        sizes.fill(resolve)?;
 
-        CppInterfaceGenerator {
+        Ok(CppInterfaceGenerator {
             _src: Source::default(),
             r#gen: self,
             resolve,
@@ -330,7 +391,7 @@ impl Cpp {
             sizes,
             in_guest_import,
             wasm_import_module,
-        }
+        })
     }
 
     fn clang_format(code: &mut String) {
@@ -423,6 +484,9 @@ impl Cpp {
         if self.dependencies.needs_tuple {
             self.include("<tuple>");
         }
+        if self.dependencies.needs_span {
+            self.include("<span>");
+        }
         if self.dependencies.needs_wit {
             self.include("\"wit.h\"");
         }
@@ -443,6 +507,7 @@ impl Cpp {
                 includes: std::mem::take(&mut self.includes),
                 src: std::mem::take(&mut self.h_src),
                 dependencies: std::mem::take(&mut self.dependencies),
+                user_class_includes: std::mem::take(&mut self.user_class_includes),
             }
         } else {
             Default::default()
@@ -459,6 +524,9 @@ impl Cpp {
                 uwriteln!(header, "#include {include}");
             }
             header.push_str(&self.h_src.src);
+            for include in self.user_class_includes.iter() {
+                uwriteln!(header, "#include {include}");
+            }
             let mut filename = namespace.join("-");
             filename.push_str(".h");
             if self.opts.format {
@@ -468,8 +536,13 @@ impl Cpp {
 
             let _ = std::mem::replace(&mut self.includes, store.includes);
             let _ = std::mem::replace(&mut self.h_src, store.src);
-            let _ = std::mem::replace(&mut self.dependencies, store.dependencies);
-            self.includes.push(String::from("\"") + &filename + "\"");
+            let file_deps = std::mem::replace(&mut self.dependencies, store.dependencies);
+            self.dependencies.merge(&file_deps);
+            let _ = std::mem::replace(&mut self.user_class_includes, store.user_class_includes);
+            let inc = String::from("\"") + &filename + "\"";
+            if !self.user_class_includes.contains(&inc) {
+                self.user_class_includes.push(inc);
+            }
         }
     }
 }
@@ -479,14 +552,36 @@ struct FileContext {
     includes: Vec<String>,
     src: SourceWithState,
     dependencies: Includes,
+    user_class_includes: Vec<String>,
 }
 
 impl WorldGenerator for Cpp {
-    fn preprocess(&mut self, resolve: &Resolve, world: WorldId) {
+    fn preprocess(&mut self, resolve: &Resolve, world: WorldId) -> anyhow::Result<()> {
         let name = &resolve.worlds[world].name;
         self.world = name.to_string();
         self.types.analyze(resolve);
         self.world_id = Some(world);
+        for (name, item) in &resolve.worlds[world].exports {
+            if let WorldItem::Interface { id, .. } = item {
+                self.update_instance_name(resolve, name, *id);
+            }
+        }
+        for (_name, item) in &resolve.worlds[world].exports {
+            if let WorldItem::Interface { id, .. } = item {
+                let namespc = namespace(resolve, &TypeOwner::Interface(*id), true, self);
+                for &type_id in resolve.interfaces[*id].types.values() {
+                    let ty = &resolve.types[type_id];
+                    if matches!(ty.kind, TypeDefKind::Resource) {
+                        if let Some(name) = &ty.name {
+                            let pascal = name.to_upper_camel_case();
+                            self.h_src.change_namespace(&namespc);
+                            uwriteln!(self.h_src.src, "class {pascal};");
+                        }
+                    }
+                }
+            }
+        }
+        self.h_src.change_namespace(&Vec::default());
         uwriteln!(
             self.c_src_head,
             r#"#include "{}_cpp.h"
@@ -506,6 +601,7 @@ impl WorldGenerator for Cpp {
             "#,
             self.world.to_snake_case(),
         );
+        Ok(())
     }
 
     fn import_interface(
@@ -516,6 +612,7 @@ impl WorldGenerator for Cpp {
         _files: &mut Files,
     ) -> anyhow::Result<()> {
         self.imported_interfaces.insert(id);
+        self.update_instance_name(resolve, name, id);
 
         let full_name = resolve.name_world_key(name);
         match self.opts.with.iter().find(|e| e.0 == full_name) {
@@ -530,10 +627,9 @@ impl WorldGenerator for Cpp {
                 let store = self.start_new_file(None);
                 let wasm_import_module = resolve.name_world_key(name);
                 let binding = Some(name);
-                let mut r#gen = self.interface(resolve, binding, true, Some(wasm_import_module));
+                let mut r#gen = self.interface(resolve, binding, true, Some(wasm_import_module))?;
                 r#gen.interface = Some(id);
-                let namespace =
-                    namespace(resolve, &TypeOwner::Interface(id), false, &r#gen.r#gen.opts);
+                let namespace = namespace(resolve, &TypeOwner::Interface(id), false, &*r#gen.r#gen);
                 let docs = resolve.interfaces[id].docs.contents.as_deref();
                 r#gen
                     .r#gen
@@ -542,13 +638,20 @@ impl WorldGenerator for Cpp {
                 r#gen.types(id);
 
                 for (_name, func) in resolve.interfaces[id].functions.iter() {
-                    if matches!(func.kind, FunctionKind::Freestanding) {
+                    if matches!(
+                        func.kind,
+                        FunctionKind::Freestanding
+                            | FunctionKind::Getter
+                            | FunctionKind::Setter
+                            | FunctionKind::AsyncFreestanding
+                    ) {
+                        let variant = if r#gen.is_async(func) {
+                            AbiVariant::GuestImportAsync
+                        } else {
+                            AbiVariant::GuestImport
+                        };
                         r#gen.r#gen.h_src.change_namespace(&namespace);
-                        r#gen.generate_function(
-                            func,
-                            &TypeOwner::Interface(id),
-                            AbiVariant::GuestImport,
-                        );
+                        r#gen.generate_function(func, &TypeOwner::Interface(id), variant);
                     }
                 }
                 self.finish_file(&namespace, store);
@@ -584,11 +687,12 @@ impl WorldGenerator for Cpp {
             .src
             .push_str(&format!("// export_interface {name:?}\n"));
         self.imported_interfaces.remove(&id);
+        self.update_instance_name(resolve, name, id);
         let wasm_import_module = resolve.name_world_key(name);
         let binding = Some(name);
-        let mut r#gen = self.interface(resolve, binding, false, Some(wasm_import_module));
+        let mut r#gen = self.interface(resolve, binding, false, Some(wasm_import_module))?;
         r#gen.interface = Some(id);
-        let namespace = namespace(resolve, &TypeOwner::Interface(id), true, &r#gen.r#gen.opts);
+        let namespace = namespace(resolve, &TypeOwner::Interface(id), true, &*r#gen.r#gen);
         let docs = resolve.interfaces[id].docs.contents.as_deref();
         r#gen
             .r#gen
@@ -597,9 +701,20 @@ impl WorldGenerator for Cpp {
         r#gen.types(id);
 
         for (_name, func) in resolve.interfaces[id].functions.iter() {
-            if matches!(func.kind, FunctionKind::Freestanding) {
+            if matches!(
+                func.kind,
+                FunctionKind::Freestanding
+                    | FunctionKind::Getter
+                    | FunctionKind::Setter
+                    | FunctionKind::AsyncFreestanding
+            ) {
+                let variant = if r#gen.is_async(func) {
+                    AbiVariant::GuestExportAsync
+                } else {
+                    AbiVariant::GuestExport
+                };
                 r#gen.r#gen.h_src.change_namespace(&namespace);
-                r#gen.generate_function(func, &TypeOwner::Interface(id), AbiVariant::GuestExport);
+                r#gen.generate_function(func, &TypeOwner::Interface(id), variant);
             }
         }
         self.finish_file(&namespace, store);
@@ -613,19 +728,32 @@ impl WorldGenerator for Cpp {
         world: WorldId,
         funcs: &[(&str, &Function)],
         _files: &mut Files,
-    ) {
+    ) -> Result<()> {
         let name = WorldKey::Name("$root".to_string()); //WorldKey::Name(resolve.worlds[world].name.clone());
         let wasm_import_module = resolve.name_world_key(&name);
         let binding = Some(name);
-        let mut r#gen = self.interface(resolve, binding.as_ref(), true, Some(wasm_import_module));
-        let namespace = namespace(resolve, &TypeOwner::World(world), false, &r#gen.r#gen.opts);
+        let mut r#gen =
+            self.interface(resolve, binding.as_ref(), true, Some(wasm_import_module))?;
+        let namespace = namespace(resolve, &TypeOwner::World(world), false, &*r#gen.r#gen);
 
         for (_name, func) in funcs.iter() {
-            if matches!(func.kind, FunctionKind::Freestanding) {
+            if matches!(
+                func.kind,
+                FunctionKind::Freestanding
+                    | FunctionKind::Getter
+                    | FunctionKind::Setter
+                    | FunctionKind::AsyncFreestanding
+            ) {
+                let variant = if r#gen.is_async(func) {
+                    AbiVariant::GuestImportAsync
+                } else {
+                    AbiVariant::GuestImport
+                };
                 r#gen.r#gen.h_src.change_namespace(&namespace);
-                r#gen.generate_function(func, &TypeOwner::World(world), AbiVariant::GuestImport);
+                r#gen.generate_function(func, &TypeOwner::World(world), variant);
             }
         }
+        Ok(())
     }
 
     fn export_funcs(
@@ -637,13 +765,24 @@ impl WorldGenerator for Cpp {
     ) -> anyhow::Result<()> {
         let name = WorldKey::Name(resolve.worlds[world].name.clone());
         let binding = Some(name);
-        let mut r#gen = self.interface(resolve, binding.as_ref(), false, None);
-        let namespace = namespace(resolve, &TypeOwner::World(world), true, &r#gen.r#gen.opts);
+        let mut r#gen = self.interface(resolve, binding.as_ref(), false, None)?;
+        let namespace = namespace(resolve, &TypeOwner::World(world), true, &*r#gen.r#gen);
 
         for (_name, func) in funcs.iter() {
-            if matches!(func.kind, FunctionKind::Freestanding) {
+            if matches!(
+                func.kind,
+                FunctionKind::Freestanding
+                    | FunctionKind::Getter
+                    | FunctionKind::Setter
+                    | FunctionKind::AsyncFreestanding
+            ) {
+                let variant = if r#gen.is_async(func) {
+                    AbiVariant::GuestExportAsync
+                } else {
+                    AbiVariant::GuestExport
+                };
                 r#gen.r#gen.h_src.change_namespace(&namespace);
-                r#gen.generate_function(func, &TypeOwner::World(world), AbiVariant::GuestExport);
+                r#gen.generate_function(func, &TypeOwner::World(world), variant);
             }
         }
         Ok(())
@@ -655,11 +794,12 @@ impl WorldGenerator for Cpp {
         _world: WorldId,
         types: &[(&str, TypeId)],
         _files: &mut Files,
-    ) {
-        let mut r#gen = self.interface(resolve, None, true, Some("$root".to_string()));
+    ) -> Result<()> {
+        let mut r#gen = self.interface(resolve, None, true, Some("$root".to_string()))?;
         for (name, id) in types.iter() {
             r#gen.define_type(name, *id);
         }
+        Ok(())
     }
 
     fn finish(
@@ -668,6 +808,7 @@ impl WorldGenerator for Cpp {
         world_id: WorldId,
         files: &mut Files,
     ) -> std::result::Result<(), anyhow::Error> {
+        self.opts.async_.ensure_all_used()?;
         let world = &resolve.worlds[world_id];
         let snake = world.name.to_snake_case();
         let linking_symbol = wit_bindgen_c::component_type_object::linking_symbol(&world.name);
@@ -721,9 +862,14 @@ impl WorldGenerator for Cpp {
         self.c_src.change_namespace(&Vec::default());
         c_str.src.push_str(&self.c_src_head);
         c_str.src.push_str(&self.extern_c_decls);
+        c_str.src.push_str(&self.vtable_decls);
         c_str.src.push_str(&self.c_src.src);
         self.h_src.change_namespace(&Vec::default());
         h_str.src.push_str(&self.h_src.src);
+
+        for include in self.user_class_includes.iter() {
+            uwriteln!(h_str.src, "#include {include}");
+        }
 
         uwriteln!(c_str.src, "\n// Component Adapters");
 
@@ -773,9 +919,9 @@ impl WorldGenerator for Cpp {
 }
 
 // determine namespace (for the lifted C++ function)
-fn namespace(resolve: &Resolve, owner: &TypeOwner, guest_export: bool, opts: &Opts) -> Vec<String> {
+fn namespace(resolve: &Resolve, owner: &TypeOwner, guest_export: bool, r#gen: &Cpp) -> Vec<String> {
     let mut result = Vec::default();
-    if let Some(prefix) = &opts.internal_prefix {
+    if let Some(prefix) = &r#gen.opts.internal_prefix {
         result.push(prefix.clone());
     }
     if guest_export {
@@ -784,14 +930,18 @@ fn namespace(resolve: &Resolve, owner: &TypeOwner, guest_export: bool, opts: &Op
     match owner {
         TypeOwner::World(w) => result.push(to_c_ident(&resolve.worlds[*w].name)),
         TypeOwner::Interface(i) => {
-            let iface = &resolve.interfaces[*i];
-            let pkg_id = iface.package.unwrap();
-            let pkg = &resolve.packages[pkg_id];
-            result.push(to_c_ident(&pkg.name.namespace));
-            // Use name_package_module to get version-specific package names
-            result.push(to_c_ident(&name_package_module(resolve, pkg_id)));
-            if let Some(name) = &iface.name {
-                result.push(to_c_ident(name));
+            if let Some(instance) = r#gen.instance_names.get(i) {
+                result.push(to_c_ident(instance));
+            } else {
+                let iface = &resolve.interfaces[*i];
+                let pkg_id = iface.package.unwrap();
+                let pkg = &resolve.packages[pkg_id];
+                result.push(to_c_ident(&pkg.name.namespace));
+                // Use name_package_module to get version-specific package names
+                result.push(to_c_ident(&name_package_module(resolve, pkg_id)));
+                if let Some(name) = &iface.name {
+                    result.push(to_c_ident(name));
+                }
             }
         }
         TypeOwner::None => (),
@@ -875,25 +1025,53 @@ struct CppInterfaceGenerator<'a> {
 }
 
 impl CppInterfaceGenerator<'_> {
+    fn is_async(&mut self, func: &Function) -> bool {
+        self.r#gen
+            .is_async(self.resolve, self._name, func, self.in_guest_import)
+    }
+
     fn types(&mut self, iface: InterfaceId) {
         let iface_data = &self.resolve().interfaces[iface];
 
-        // First pass: emit forward declarations for all resources
-        // This ensures resources can reference each other in method signatures
-        for (name, id) in iface_data.types.iter() {
-            let ty = &self.resolve().types[*id];
-            if matches!(&ty.kind, TypeDefKind::Resource) {
-                let pascal = name.to_upper_camel_case();
-                let guest_import = self.r#gen.imported_interfaces.contains(&iface);
-                let namespc = namespace(self.resolve, &ty.owner, !guest_import, &self.r#gen.opts);
-                self.r#gen.h_src.change_namespace(&namespc);
-                uwriteln!(self.r#gen.h_src.src, "class {pascal};");
+        for &id in iface_data.types.values() {
+            let ty = &self.resolve().types[id];
+            if ty.owner != TypeOwner::Interface(iface) {
+                continue;
+            }
+            if let Some(name) = &ty.name {
+                match &ty.kind {
+                    TypeDefKind::Resource => {
+                        let pascal = name.to_upper_camel_case();
+                        uwriteln!(self.r#gen.h_src.src, "class {pascal};");
+                    }
+                    TypeDefKind::Record(_) => {
+                        let pascal = name.to_pascal_case();
+                        uwriteln!(self.r#gen.h_src.src, "struct {pascal};");
+                        let needs_param = match self.r#gen.opts.ownership {
+                            Ownership::Owning => false,
+                            Ownership::CoarseBorrowing => !self.r#gen.types.get(id).has_own_handle,
+                            Ownership::FineBorrowing => true,
+                        };
+                        if needs_param {
+                            let param_pascal = format!("{name}-param").to_pascal_case();
+                            uwriteln!(self.r#gen.h_src.src, "struct {param_pascal};");
+                        }
+                    }
+                    TypeDefKind::Variant(_) => {
+                        let pascal = name.to_pascal_case();
+                        uwriteln!(self.r#gen.h_src.src, "struct {pascal};");
+                    }
+                    _ => {}
+                }
             }
         }
 
-        // Second pass: emit full type definitions
-        for (name, id) in iface_data.types.iter() {
-            self.define_type(name, *id);
+        // Here we sort the types topologically before emitting code for them,
+        // taking into consideration the parameter and return types of functions
+        // associated with resource types. This ensures each type is declared
+        // before any uses of it.
+        for (name, id) in sort_types(self.resolve, &iface_data.types) {
+            self.define_type(name, id);
         }
     }
 
@@ -910,11 +1088,28 @@ impl CppInterfaceGenerator<'_> {
             TypeDefKind::Result(r) => self.type_result(id, name, r, &ty.docs),
             TypeDefKind::List(t) => self.type_list(id, name, t, &ty.docs),
             TypeDefKind::Type(t) => self.type_alias(id, name, t, &ty.docs),
-            TypeDefKind::Future(_) => todo!("generate for future"),
-            TypeDefKind::Stream(_) => todo!("generate for stream"),
-            TypeDefKind::Handle(_) => todo!("generate for handle"),
-            TypeDefKind::FixedLengthList(_, _) => todo!(),
-            TypeDefKind::Map(_, _) => todo!(),
+            TypeDefKind::Future(t) => self.type_future(id, name, t, &ty.docs),
+            TypeDefKind::Stream(t) => self.type_stream(id, name, t, &ty.docs),
+            TypeDefKind::Handle(handle) => {
+                let ty = &self.resolve.types[id];
+                let guest_export = self.is_exported_type(ty);
+                let namespc = namespace(self.resolve, &ty.owner, guest_export, &*self.r#gen);
+                self.r#gen.h_src.change_namespace(&namespc);
+                let pascal = name.to_pascal_case();
+                Self::docs(&mut self.r#gen.h_src.src, &ty.docs);
+                let inner = match handle {
+                    Handle::Own(id) => self.type_name(&Type::Id(*id), &namespc, Flavor::InStruct),
+                    Handle::Borrow(id) => format!(
+                        "std::reference_wrapper<const {}>",
+                        self.type_name(&Type::Id(*id), &namespc, Flavor::InStruct)
+                    ),
+                };
+                uwriteln!(self.r#gen.h_src.src, "using {pascal} = {inner};");
+            }
+            TypeDefKind::FixedLengthList(t, size) => {
+                self.type_fixed_length_list(id, name, t, *size, &ty.docs)
+            }
+            TypeDefKind::Map(k, v) => self.type_map(id, name, k, v, &ty.docs),
             TypeDefKind::Unknown => unreachable!(),
         }
     }
@@ -928,12 +1123,18 @@ impl CppInterfaceGenerator<'_> {
     ) -> (Vec<String>, String) {
         let (object, owner) = match &func.kind {
             FunctionKind::Freestanding => None,
+            FunctionKind::Getter => None,
+            FunctionKind::Setter => None,
             FunctionKind::Method(i) => Some(i),
+            FunctionKind::MethodGetter(i) => Some(i),
+            FunctionKind::MethodSetter(i) => Some(i),
             FunctionKind::Static(i) => Some(i),
+            FunctionKind::StaticGetter(i) => Some(i),
+            FunctionKind::StaticSetter(i) => Some(i),
             FunctionKind::Constructor(i) => Some(i),
-            FunctionKind::AsyncFreestanding => todo!(),
-            FunctionKind::AsyncMethod(_id) => todo!(),
-            FunctionKind::AsyncStatic(_id) => todo!(),
+            FunctionKind::AsyncFreestanding => None,
+            FunctionKind::AsyncMethod(id) => Some(id),
+            FunctionKind::AsyncStatic(id) => Some(id),
         }
         .map(|i| {
             let ty = &self.resolve.types[*i];
@@ -945,9 +1146,15 @@ impl CppInterfaceGenerator<'_> {
                 .map(TypeOwner::Interface)
                 .unwrap_or(TypeOwner::World(self.r#gen.world_id.unwrap())),
         ));
-        let mut namespace = namespace(self.resolve, &owner, guest_export, &self.r#gen.opts);
+        let mut namespace = namespace(self.resolve, &owner, guest_export, &*self.r#gen);
         let is_drop = is_special_method(func);
-        let func_name_h = if !matches!(&func.kind, FunctionKind::Freestanding) {
+        let func_name_h = if !matches!(
+            &func.kind,
+            FunctionKind::Freestanding
+                | FunctionKind::Getter
+                | FunctionKind::Setter
+                | FunctionKind::AsyncFreestanding
+        ) {
             namespace.push(object.clone());
             if let FunctionKind::Constructor(_i) = &func.kind {
                 // Fallible constructors return result<T, E> and are static factory methods
@@ -974,11 +1181,18 @@ impl CppInterfaceGenerator<'_> {
                     SpecialMethod::ResourceNew => "ResourceNew".to_string(),
                     SpecialMethod::ResourceRep => "ResourceRep".to_string(),
                     SpecialMethod::Allocate => "New".to_string(),
-                    SpecialMethod::None => func.item_name().to_pascal_case(),
+                    SpecialMethod::None => match &func.kind {
+                        FunctionKind::MethodSetter(_) | FunctionKind::StaticSetter(_) => {
+                            format!("set-{}", func.item_name()).to_pascal_case()
+                        }
+                        _ => func.item_name().to_pascal_case(),
+                    },
                 }
             }
+        } else if let FunctionKind::Setter = &func.kind {
+            format!("set-{}", func.item_name()).to_pascal_case()
         } else {
-            func.name.to_pascal_case()
+            func.item_name().to_pascal_case()
         };
         (namespace, func_name_h)
     }
@@ -1041,31 +1255,38 @@ impl CppInterfaceGenerator<'_> {
             res.push('#');
             res
         });
-        uwriteln!(
-            self.r#gen.c_src.src,
-            r#"extern "C" __attribute__((__export_name__("{module_prefix}{func_name}")))"#
-        );
-        let return_via_pointer = false;
-        self.r#gen
-            .c_src
-            .src
-            .push_str(if signature.results.is_empty() || return_via_pointer {
-                "void"
-            } else {
-                wit_bindgen_c::wasm_type(signature.results[0])
-            });
-        self.r#gen.c_src.src.push_str(" ");
         let export_name = match module_name {
             Some(ref module_name) => make_external_symbol(module_name, &func_name, symbol_variant),
             None => make_external_component(&func_name),
         };
-        // Add prefix to C ABI export functions to avoid conflicts with C++ namespaces
-        self.r#gen.c_src.src.push_str("__wasm_export_");
-        if let Some(prefix) = self.r#gen.opts.export_prefix.as_ref() {
-            self.r#gen.c_src.src.push_str(prefix);
+        let export_prefix = self.r#gen.opts.export_prefix.clone().unwrap_or_default();
+        let return_via_pointer = false;
+        if matches!(variant, AbiVariant::GuestExportAsync) {
+            self.r#gen.dependencies.needs_wit = true;
+            uwrite!(
+                self.r#gen.c_src.src,
+                "static wit::Task<void> __wasm_export_{export_prefix}{export_name}_task("
+            );
+        } else {
+            uwriteln!(
+                self.r#gen.c_src.src,
+                r#"extern "C" __attribute__((__export_name__("{module_prefix}{func_name}")))"#
+            );
+            self.r#gen
+                .c_src
+                .src
+                .push_str(if signature.results.is_empty() || return_via_pointer {
+                    "void"
+                } else {
+                    wit_bindgen_c::wasm_type(signature.results[0])
+                });
+            self.r#gen.c_src.src.push_str(" ");
+            // Add prefix to C ABI export functions to avoid conflicts with C++ namespaces
+            self.r#gen.c_src.src.push_str("__wasm_export_");
+            self.r#gen.c_src.src.push_str(&export_prefix);
+            self.r#gen.c_src.src.push_str(&export_name);
+            self.r#gen.c_src.src.push_str("(");
         }
-        self.r#gen.c_src.src.push_str(&export_name);
-        self.r#gen.c_src.src.push_str("(");
         let mut first_arg = true;
         let mut params = Vec::new();
         for (n, ty) in signature.params.iter().enumerate() {
@@ -1100,8 +1321,13 @@ impl CppInterfaceGenerator<'_> {
     ) -> HighlevelSignature {
         let mut res = HighlevelSignature::default();
 
-        let (namespace, func_name_h) =
-            self.func_namespace_name(func, matches!(abi_variant, AbiVariant::GuestExport), false);
+        let is_export = matches!(
+            abi_variant,
+            AbiVariant::GuestExport
+                | AbiVariant::GuestExportAsync
+                | AbiVariant::GuestExportAsyncStackful
+        );
+        let (namespace, func_name_h) = self.func_namespace_name(func, is_export, false);
         res.name = func_name_h;
         res.namespace = namespace;
         let is_drop = is_special_method(func);
@@ -1130,13 +1356,28 @@ impl CppInterfaceGenerator<'_> {
             } else {
                 res.result = "void".into();
             }
+            if matches!(
+                abi_variant,
+                AbiVariant::GuestImportAsync
+                    | AbiVariant::GuestExportAsync
+                    | AbiVariant::GuestExportAsyncStackful
+            ) {
+                self.r#gen.dependencies.needs_wit = true;
+                res.result = format!("wit::Task<{}>", res.result);
+            }
             if matches!(abi_variant, AbiVariant::GuestExport)
                 && abi::guest_export_needs_post_return(self.resolve, func)
             {
                 res.post_return = true;
             }
         }
-        if (matches!(func.kind, FunctionKind::Static(_)) || is_fallible_constructor)
+        if (matches!(
+            func.kind,
+            FunctionKind::Static(_)
+                | FunctionKind::StaticGetter(_)
+                | FunctionKind::StaticSetter(_)
+                | FunctionKind::AsyncStatic(_)
+        ) || is_fallible_constructor)
             && !(matches!(&is_drop, SpecialMethod::ResourceDrop)
                 && matches!(abi_variant, AbiVariant::GuestImport))
         {
@@ -1151,9 +1392,14 @@ impl CppInterfaceGenerator<'_> {
         {
             if i == 0
                 && name == "self"
-                && (matches!(&func.kind, FunctionKind::Method(_))
-                    || (matches!(&is_drop, SpecialMethod::ResourceDrop)
-                        && matches!(abi_variant, AbiVariant::GuestImport)))
+                && (matches!(
+                    &func.kind,
+                    FunctionKind::Method(_)
+                        | FunctionKind::MethodGetter(_)
+                        | FunctionKind::MethodSetter(_)
+                        | FunctionKind::AsyncMethod(_)
+                ) || (matches!(&is_drop, SpecialMethod::ResourceDrop)
+                    && matches!(abi_variant, AbiVariant::GuestImport)))
             {
                 res.implicit_self = true;
                 continue;
@@ -1173,8 +1419,18 @@ impl CppInterfaceGenerator<'_> {
             ));
         }
         // default to non-const when exporting a method
-        let import = matches!(abi_variant, AbiVariant::GuestImport);
-        if matches!(func.kind, FunctionKind::Method(_)) && import {
+        let import = matches!(
+            abi_variant,
+            AbiVariant::GuestImport | AbiVariant::GuestImportAsync
+        );
+        if matches!(
+            func.kind,
+            FunctionKind::Method(_)
+                | FunctionKind::MethodGetter(_)
+                | FunctionKind::MethodSetter(_)
+                | FunctionKind::AsyncMethod(_)
+        ) && import
+        {
             res.const_member = true;
         }
         res
@@ -1292,24 +1548,31 @@ impl CppInterfaceGenerator<'_> {
         ) -> Vec<String> {
             let owner = &cifg.resolve.types[match &func.kind {
                 FunctionKind::Static(id) => *id,
+                FunctionKind::AsyncStatic(id) => *id,
+                FunctionKind::Method(id) => *id,
+                FunctionKind::AsyncMethod(id) => *id,
                 _ => panic!("special func should be static"),
             }];
             let mut namespace = namespace(
                 cifg.resolve,
                 &owner.owner,
-                matches!(variant, AbiVariant::GuestExport),
-                &cifg.r#gen.opts,
+                matches!(
+                    variant,
+                    AbiVariant::GuestExport
+                        | AbiVariant::GuestExportAsync
+                        | AbiVariant::GuestExportAsyncStackful
+                ),
+                &*cifg.r#gen,
             );
             namespace.push(owner.name.as_ref().unwrap().to_upper_camel_case());
             namespace
         }
 
         let export = match variant {
-            AbiVariant::GuestImport => false,
-            AbiVariant::GuestExport => true,
-            AbiVariant::GuestImportAsync => todo!(),
-            AbiVariant::GuestExportAsync => todo!(),
-            AbiVariant::GuestExportAsyncStackful => todo!(),
+            AbiVariant::GuestImport | AbiVariant::GuestImportAsync => false,
+            AbiVariant::GuestExport
+            | AbiVariant::GuestExportAsync
+            | AbiVariant::GuestExportAsyncStackful => true,
         };
         if func.docs.contents.is_some() && !self.r#gen.h_src.src.ends_with('\n') {
             uwriteln!(self.r#gen.h_src.src, "");
@@ -1317,6 +1580,9 @@ impl CppInterfaceGenerator<'_> {
         Self::docs(&mut self.r#gen.h_src.src, &func.docs);
         let params = self.print_signature(func, variant, !export);
         let special = is_special_method(func);
+        if matches!(special, SpecialMethod::None) {
+            self.generate_futures_and_streams(func, variant);
+        }
         if !matches!(special, SpecialMethod::Allocate) {
             self.r#gen.c_src.src.push_str("{\n");
             let needs_dealloc = if self.r#gen.opts.api_style == APIStyle::Symmetric
@@ -1402,29 +1668,51 @@ impl CppInterfaceGenerator<'_> {
                 SpecialMethod::Allocate => unreachable!(),
                 SpecialMethod::None => {
                     // normal methods
-                    let namespace = if matches!(func.kind, FunctionKind::Freestanding) {
+                    let namespace = if matches!(
+                        func.kind,
+                        FunctionKind::Freestanding
+                            | FunctionKind::Getter
+                            | FunctionKind::Setter
+                            | FunctionKind::AsyncFreestanding
+                    ) {
                         namespace(
                             self.resolve,
                             owner,
-                            matches!(variant, AbiVariant::GuestExport),
-                            &self.r#gen.opts,
+                            matches!(
+                                variant,
+                                AbiVariant::GuestExport
+                                    | AbiVariant::GuestExportAsync
+                                    | AbiVariant::GuestExportAsyncStackful
+                            ),
+                            &*self.r#gen,
                         )
                     } else {
                         let owner = &self.resolve.types[match &func.kind {
                             FunctionKind::Static(id) => *id,
+                            FunctionKind::StaticGetter(id) => *id,
+                            FunctionKind::StaticSetter(id) => *id,
                             FunctionKind::Constructor(id) => *id,
                             FunctionKind::Method(id) => *id,
+                            FunctionKind::MethodGetter(id) => *id,
+                            FunctionKind::MethodSetter(id) => *id,
                             FunctionKind::Freestanding => unreachable!(),
-                            FunctionKind::AsyncFreestanding => todo!(),
-                            FunctionKind::AsyncMethod(_id) => todo!(),
-                            FunctionKind::AsyncStatic(_id) => todo!(),
+                            FunctionKind::Getter => unreachable!(),
+                            FunctionKind::Setter => unreachable!(),
+                            FunctionKind::AsyncFreestanding => unreachable!(),
+                            FunctionKind::AsyncMethod(id) => *id,
+                            FunctionKind::AsyncStatic(id) => *id,
                         }]
                         .clone();
                         let mut namespace = namespace(
                             self.resolve,
                             &owner.owner,
-                            matches!(variant, AbiVariant::GuestExport),
-                            &self.r#gen.opts,
+                            matches!(
+                                variant,
+                                AbiVariant::GuestExport
+                                    | AbiVariant::GuestExportAsync
+                                    | AbiVariant::GuestExportAsyncStackful
+                            ),
+                            &*self.r#gen,
                         );
                         namespace.push(owner.name.as_ref().unwrap().to_upper_camel_case());
                         namespace
@@ -1435,14 +1723,58 @@ impl CppInterfaceGenerator<'_> {
                     }
                     f.variant = variant;
                     f.needs_dealloc = needs_dealloc;
+                    f.has_result = func.result.is_some();
                     f.cabi_post = None;
-                    abi::call(f.r#gen.resolve, variant, lift_lower, func, &mut f, false);
+                    let is_async = matches!(
+                        variant,
+                        AbiVariant::GuestImportAsync
+                            | AbiVariant::GuestExportAsync
+                            | AbiVariant::GuestExportAsyncStackful
+                    );
+                    abi::call(f.r#gen.resolve, variant, lift_lower, func, &mut f, is_async);
                     let ret_area_decl = f.emit_ret_area_if_needed();
                     let code = format!("{}{}", ret_area_decl, String::from(f.src));
                     self.r#gen.c_src.src.push_str(&code);
                 }
             }
             self.r#gen.c_src.src.push_str("}\n");
+            if matches!(variant, AbiVariant::GuestExportAsync) {
+                let sig = self.resolve.wasm_signature(variant, func);
+                let module_name = self.wasm_import_module.clone();
+                let func_name = &func.name;
+                let module_prefix = module_name.as_ref().map_or(String::default(), |name| {
+                    let mut res = name.clone();
+                    res.push('#');
+                    res
+                });
+                let export_name = match module_name {
+                    Some(ref module_name) => make_external_symbol(module_name, func_name, variant),
+                    None => make_external_component(func_name),
+                };
+                let export_prefix = self.r#gen.opts.export_prefix.clone().unwrap_or_default();
+                let mut param_decls = Vec::new();
+                let mut param_names = Vec::new();
+                for (n, ty) in sig.params.iter().enumerate() {
+                    let name = format!("arg{n}");
+                    param_decls.push(format!("{} {name}", wit_bindgen_c::wasm_type(*ty)));
+                    param_names.push(name);
+                }
+                let param_decls_str = param_decls.join(", ");
+                let param_names_str = param_names.join(", ");
+                uwriteln!(
+                    self.r#gen.c_src.src,
+                    r#"extern "C" __attribute__((__export_name__("[async-lift]{module_prefix}{func_name}")))
+                    int32_t __wasm_export_{export_prefix}{export_name}({param_decls_str}) {{
+                        return wit::detail::start_task([=]() {{
+                            return __wasm_export_{export_prefix}{export_name}_task({param_names_str});
+                        }});
+                    }}
+                    extern "C" __attribute__((__export_name__("[callback][async-lift]{module_prefix}{func_name}")))
+                    int32_t __wasm_export_{export_prefix}{export_name}_callback(uint32_t event0, uint32_t event1, uint32_t event2) {{
+                        return wit::detail::callback(event0, event1, event2);
+                    }}"#
+                );
+            }
             // cabi_post
             if matches!(variant, AbiVariant::GuestExport)
                 && abi::guest_export_needs_post_return(self.resolve, func)
@@ -1488,6 +1820,267 @@ impl CppInterfaceGenerator<'_> {
                 self.r#gen.c_src.src.push_str("}\n");
             }
         }
+    }
+
+    fn generate_futures_and_streams(&mut self, func: &Function, variant: AbiVariant) {
+        let export = matches!(
+            variant,
+            AbiVariant::GuestExport
+                | AbiVariant::GuestExportAsync
+                | AbiVariant::GuestExportAsyncStackful
+        );
+        let prefix = if export { "[export]" } else { "" };
+        let base_module = self
+            .wasm_import_module
+            .as_ref()
+            .map(|e| {
+                if !export {
+                    self.r#gen
+                        .import_prefix
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_default()
+                        + e
+                } else {
+                    e.clone()
+                }
+            })
+            .unwrap_or_else(|| "$root".to_string());
+        let module = format!("{prefix}{base_module}");
+        for (index, ty) in func
+            .find_futures_and_streams(self.resolve)
+            .into_iter()
+            .enumerate()
+        {
+            match &self.resolve.types[ty].kind {
+                TypeDefKind::Future(payload) => {
+                    let payload = *payload;
+                    self.generate_future_or_stream_vtable(
+                        true,
+                        &module,
+                        index,
+                        &func.name,
+                        payload.as_ref(),
+                    );
+                }
+                TypeDefKind::Stream(payload) => {
+                    let payload = *payload;
+                    self.generate_future_or_stream_vtable(
+                        false,
+                        &module,
+                        index,
+                        &func.name,
+                        payload.as_ref(),
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn generate_future_or_stream_vtable(
+        &mut self,
+        is_future: bool,
+        module: &str,
+        index: usize,
+        func_name: &str,
+        payload_type: Option<&Type>,
+    ) {
+        let cpp_ty = self.optional_type_name(payload_type, &[], Flavor::InStruct);
+        let ordinal = {
+            let seen = if is_future {
+                &mut self.r#gen.future_vtables
+            } else {
+                &mut self.r#gen.stream_vtables
+            };
+            if !seen.insert(cpp_ty.clone()) {
+                return;
+            }
+            seen.len() - 1
+        };
+        self.r#gen.dependencies.needs_wit = true;
+
+        let kind_str = if is_future { "future" } else { "stream" };
+        let camel_str = if is_future { "Future" } else { "Stream" };
+        let id = format!("{kind_str}_{ordinal}");
+
+        let new_import = self.declare_import(
+            module,
+            &format!("[{kind_str}-new-{index}]{func_name}"),
+            &[],
+            &[WasmType::I64],
+        );
+        let rw_params: &[WasmType] = if is_future {
+            &[WasmType::I32, WasmType::Pointer]
+        } else {
+            &[WasmType::I32, WasmType::Pointer, WasmType::Length]
+        };
+        let read_import = self.declare_import(
+            module,
+            &format!("[async-lower][{kind_str}-read-{index}]{func_name}"),
+            rw_params,
+            &[WasmType::I32],
+        );
+        let write_import = self.declare_import(
+            module,
+            &format!("[async-lower][{kind_str}-write-{index}]{func_name}"),
+            rw_params,
+            &[WasmType::I32],
+        );
+        let cancel_read_import = self.declare_import(
+            module,
+            &format!("[{kind_str}-cancel-read-{index}]{func_name}"),
+            &[WasmType::I32],
+            &[WasmType::I32],
+        );
+        let cancel_write_import = self.declare_import(
+            module,
+            &format!("[{kind_str}-cancel-write-{index}]{func_name}"),
+            &[WasmType::I32],
+            &[WasmType::I32],
+        );
+        let drop_readable_import = self.declare_import(
+            module,
+            &format!("[{kind_str}-drop-readable-{index}]{func_name}"),
+            &[WasmType::I32],
+            &[],
+        );
+        let drop_writable_import = self.declare_import(
+            module,
+            &format!("[{kind_str}-drop-writable-{index}]{func_name}"),
+            &[WasmType::I32],
+            &[],
+        );
+
+        let (size_expr, align_expr, lower_fn, dealloc_fn, lift_fn) = if let Some(ty) = payload_type
+        {
+            let size_expr = self.sizes.size(ty).format(POINTER_SIZE_EXPRESSION);
+            let align_expr = self.sizes.align(ty).format(POINTER_SIZE_EXPRESSION);
+
+            let mut f_lower = FunctionBindgen::new(self, vec!["value".to_string()]);
+            f_lower.variant = AbiVariant::GuestExport;
+            abi::lower_to_memory(
+                f_lower.r#gen.resolve,
+                &mut f_lower,
+                "dst".to_string(),
+                "value".to_string(),
+                ty,
+            );
+            let lower_ret = f_lower.emit_ret_area_if_needed();
+            let lower_body = format!("{}{}", lower_ret, String::from(f_lower.src));
+
+            let mut f_dealloc = FunctionBindgen::new(self, Vec::new());
+            f_dealloc.variant = AbiVariant::GuestExport;
+            abi::deallocate_lists_in_types(
+                f_dealloc.r#gen.resolve,
+                std::slice::from_ref(ty),
+                &["dst".to_string()],
+                true,
+                &mut f_dealloc,
+            );
+            let dealloc_body = String::from(f_dealloc.src);
+
+            let mut f_lift = FunctionBindgen::new(self, Vec::new());
+            f_lift.variant = AbiVariant::GuestExportAsync;
+            let lift_res =
+                abi::lift_from_memory(f_lift.r#gen.resolve, &mut f_lift, "src".to_string(), ty);
+            let lift_ret = f_lift.emit_ret_area_if_needed();
+            let lift_ret_expr = if lift_res.starts_with("std::move(") && !lift_res.contains('.') {
+                &lift_res[9..]
+            } else {
+                &lift_res
+            };
+            let lift_body = format!(
+                "{}{}\nreturn {};",
+                lift_ret,
+                String::from(f_lift.src),
+                lift_ret_expr
+            );
+
+            (
+                size_expr,
+                align_expr,
+                format!(
+                    "static void __wit_{id}_lower({cpp_ty} value, uint8_t *dst) {{\n(void)value;\n(void)dst;\n{lower_body}}}\n"
+                ),
+                format!(
+                    "static void __wit_{id}_dealloc_lists(uint8_t *dst) {{\n(void)dst;\n{dealloc_body}}}\n"
+                ),
+                format!(
+                    "static {cpp_ty} __wit_{id}_lift(uint8_t *src) {{\n(void)src;\n{lift_body}\n}}\n"
+                ),
+            )
+        } else {
+            (
+                "0".to_string(),
+                "1".to_string(),
+                format!("static void __wit_{id}_lower(uint8_t *dst) {{ (void)dst; }}\n"),
+                format!("static void __wit_{id}_dealloc_lists(uint8_t *dst) {{ (void)dst; }}\n"),
+                format!("static void __wit_{id}_lift(uint8_t *src) {{ (void)src; }}\n"),
+            )
+        };
+
+        let rw_wrappers = if is_future {
+            format!(
+                r#"static uint32_t __wit_{id}_start_write(uint32_t h, const uint8_t *val) {{
+                    return static_cast<uint32_t>({write_import}(static_cast<int32_t>(h), const_cast<uint8_t *>(val)));
+                }}
+                static uint32_t __wit_{id}_start_read(uint32_t h, uint8_t *val) {{
+                    return static_cast<uint32_t>({read_import}(static_cast<int32_t>(h), val));
+                }}"#
+            )
+        } else {
+            format!(
+                r#"static uint32_t __wit_{id}_start_write(uint32_t h, const uint8_t *val, size_t amt) {{
+                    return static_cast<uint32_t>({write_import}(static_cast<int32_t>(h), const_cast<uint8_t *>(val), amt));
+                }}
+                static uint32_t __wit_{id}_start_read(uint32_t h, uint8_t *val, size_t amt) {{
+                    return static_cast<uint32_t>({read_import}(static_cast<int32_t>(h), val, amt));
+                }}"#
+            )
+        };
+
+        uwriteln!(
+            self.r#gen.vtable_decls,
+            r#"template <>
+            const wit::detail::{camel_str}Vtable<{cpp_ty}> *wit::detail::get_{kind_str}_vtable<{cpp_ty}>();
+            static uint64_t __wit_{id}_new() {{
+                return static_cast<uint64_t>({new_import}());
+            }}
+            {rw_wrappers}
+            static uint32_t __wit_{id}_cancel_write(uint32_t h) {{
+                return static_cast<uint32_t>({cancel_write_import}(static_cast<int32_t>(h)));
+            }}
+            static uint32_t __wit_{id}_cancel_read(uint32_t h) {{
+                return static_cast<uint32_t>({cancel_read_import}(static_cast<int32_t>(h)));
+            }}
+            static void __wit_{id}_drop_writable(uint32_t h) {{
+                {drop_writable_import}(static_cast<int32_t>(h));
+            }}
+            static void __wit_{id}_drop_readable(uint32_t h) {{
+                {drop_readable_import}(static_cast<int32_t>(h));
+            }}
+            {lower_fn}{dealloc_fn}{lift_fn}
+            static const wit::detail::{camel_str}Vtable<{cpp_ty}> __wit_{id}_vtable = {{
+                {size_expr},
+                {align_expr},
+                __wit_{id}_lower,
+                __wit_{id}_dealloc_lists,
+                __wit_{id}_lift,
+                __wit_{id}_start_write,
+                __wit_{id}_start_read,
+                __wit_{id}_cancel_write,
+                __wit_{id}_cancel_read,
+                __wit_{id}_drop_writable,
+                __wit_{id}_drop_readable,
+                __wit_{id}_new,
+            }};
+            template <>
+            const wit::detail::{camel_str}Vtable<{cpp_ty}> *wit::detail::get_{kind_str}_vtable<{cpp_ty}>() {{
+                return &__wit_{id}_vtable;
+            }}
+            "#
+        );
     }
 
     // in C this is print_optional_ty
@@ -1538,7 +2131,7 @@ impl CppInterfaceGenerator<'_> {
         guest_export: bool,
     ) -> String {
         let ty = &self.resolve.types[id];
-        let namespc = namespace(self.resolve, &ty.owner, guest_export, &self.r#gen.opts);
+        let namespc = namespace(self.resolve, &ty.owner, guest_export, &*self.r#gen);
         let mut relative = SourceWithState {
             namespace: Vec::from(from_namespace),
             ..Default::default()
@@ -1611,29 +2204,77 @@ impl CppInterfaceGenerator<'_> {
 
                     let is_exported = self.is_exported_type(resource_ty);
                     match (false, flavor) {
-                        (false, Flavor::Argument(AbiVariant::GuestImport))
-                        | (true, Flavor::Argument(AbiVariant::GuestExport)) => {
-                            typename.push_str("&&")
-                        }
-                        (false, Flavor::Argument(AbiVariant::GuestExport))
-                        | (false, Flavor::Result(AbiVariant::GuestExport))
-                        | (true, Flavor::Argument(AbiVariant::GuestImport))
-                        | (true, Flavor::Result(AbiVariant::GuestImport)) => {
+                        (
+                            false,
+                            Flavor::Argument(
+                                AbiVariant::GuestImport | AbiVariant::GuestImportAsync,
+                            ),
+                        )
+                        | (
+                            true,
+                            Flavor::Argument(
+                                AbiVariant::GuestExport
+                                | AbiVariant::GuestExportAsync
+                                | AbiVariant::GuestExportAsyncStackful,
+                            ),
+                        ) => typename.push_str("&&"),
+                        (
+                            false,
+                            Flavor::Argument(
+                                AbiVariant::GuestExport
+                                | AbiVariant::GuestExportAsync
+                                | AbiVariant::GuestExportAsyncStackful,
+                            ),
+                        )
+                        | (
+                            false,
+                            Flavor::Result(
+                                AbiVariant::GuestExport
+                                | AbiVariant::GuestExportAsync
+                                | AbiVariant::GuestExportAsyncStackful,
+                            ),
+                        )
+                        | (
+                            true,
+                            Flavor::Argument(
+                                AbiVariant::GuestImport | AbiVariant::GuestImportAsync,
+                            ),
+                        )
+                        | (
+                            true,
+                            Flavor::Result(AbiVariant::GuestImport | AbiVariant::GuestImportAsync),
+                        ) => {
                             // Only exported resources have ::Owned typedef
                             if is_exported {
-                                typename.push_str(&format!("::{OWNED_CLASS_NAME}"))
+                                self.r#gen.dependencies.needs_wit = true;
+                                typename = format!(
+                                    "wit::{RESOURCE_EXPORT_BASE_CLASS_NAME}<{typename}>::{OWNED_CLASS_NAME}"
+                                );
                             } else {
                                 typename.push_str("&&")
                             }
                         }
-                        (false, Flavor::Result(AbiVariant::GuestImport))
-                        | (true, Flavor::Result(AbiVariant::GuestExport)) => (),
+                        (
+                            false,
+                            Flavor::Result(AbiVariant::GuestImport | AbiVariant::GuestImportAsync),
+                        )
+                        | (
+                            true,
+                            Flavor::Result(
+                                AbiVariant::GuestExport
+                                | AbiVariant::GuestExportAsync
+                                | AbiVariant::GuestExportAsyncStackful,
+                            ),
+                        ) => (),
                         (_, Flavor::InStruct) => (),
                         (false, Flavor::BorrowedArgument) => (),
                         (_, _) => todo!(),
                     }
                     if matches!(flavor, Flavor::InStruct) && is_exported {
-                        typename.push_str(&format!("::{OWNED_CLASS_NAME}"))
+                        self.r#gen.dependencies.needs_wit = true;
+                        typename = format!(
+                            "wit::{RESOURCE_EXPORT_BASE_CLASS_NAME}<{typename}>::{OWNED_CLASS_NAME}"
+                        );
                     }
                     typename
                 }
@@ -1731,8 +2372,22 @@ impl CppInterfaceGenerator<'_> {
                         }
                     }
                 }
-                TypeDefKind::Future(_) => todo!(),
-                TypeDefKind::Stream(_) => todo!(),
+                TypeDefKind::Future(ty) => {
+                    self.r#gen.dependencies.needs_wit = true;
+                    let inner = match ty {
+                        Some(ty) => self.type_name(ty, from_namespace, Flavor::InStruct),
+                        None => "void".to_string(),
+                    };
+                    format!("wit::FutureReader<{inner}>")
+                }
+                TypeDefKind::Stream(ty) => {
+                    self.r#gen.dependencies.needs_wit = true;
+                    let inner = match ty {
+                        Some(ty) => self.type_name(ty, from_namespace, Flavor::InStruct),
+                        None => "void".to_string(),
+                    };
+                    format!("wit::StreamReader<{inner}>")
+                }
                 TypeDefKind::Type(ty) => self.type_name(ty, from_namespace, flavor),
                 TypeDefKind::FixedLengthList(ty, size) => {
                     self.r#gen.dependencies.needs_array = true;
@@ -1741,10 +2396,36 @@ impl CppInterfaceGenerator<'_> {
                         self.type_name(ty, from_namespace, flavor)
                     )
                 }
-                TypeDefKind::Map(_, _) => todo!(),
+                TypeDefKind::Map(key, value) => {
+                    let borrowed = match flavor {
+                        Flavor::BorrowedArgument => true,
+                        Flavor::Argument(var) => {
+                            matches!(var, AbiVariant::GuestImport)
+                                || self.r#gen.opts.api_style == APIStyle::Symmetric
+                        }
+                        _ => false,
+                    };
+                    let element_flavor = if borrowed {
+                        Flavor::BorrowedArgument
+                    } else {
+                        Flavor::InStruct
+                    };
+                    let k = self.type_name(key, from_namespace, element_flavor);
+                    let v = self.type_name(value, from_namespace, element_flavor);
+                    if borrowed {
+                        self.r#gen.dependencies.needs_span = true;
+                        format!("std::span<std::pair<{k}, {v}> const>")
+                    } else {
+                        self.r#gen.dependencies.needs_wit = true;
+                        format!("wit::unordered_map<{k}, {v}>")
+                    }
+                }
                 TypeDefKind::Unknown => todo!(),
             },
-            Type::ErrorContext => todo!(),
+            Type::ErrorContext => {
+                self.r#gen.dependencies.needs_wit = true;
+                "wit::ErrorContext".to_string()
+            }
         }
     }
 
@@ -1863,7 +2544,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
     ) {
         let ty = &self.resolve.types[id];
         let guest_export = self.is_exported_type(ty);
-        let namespc = namespace(self.resolve, &ty.owner, guest_export, &self.r#gen.opts);
+        let namespc = namespace(self.resolve, &ty.owner, guest_export, &*self.r#gen);
 
         if self.r#gen.is_first_definition(&namespc, name) {
             self.r#gen.h_src.change_namespace(&namespc);
@@ -1895,7 +2576,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
             let store = self.r#gen.start_new_file(Some(definition));
             let mut world_name = to_c_ident(&self.r#gen.world);
             world_name.push_str("::");
-            let namespc = namespace(self.resolve, &type_.owner, !guest_import, &self.r#gen.opts);
+            let namespc = namespace(self.resolve, &type_.owner, !guest_import, &*self.r#gen);
             let pascal = name.to_upper_camel_case();
             let mut user_filename = namespc.clone();
             user_filename.push(pascal.clone());
@@ -1957,6 +2638,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
                     docs: Docs::default(),
                     stability: Stability::Unknown,
                     span: Default::default(),
+                    external_id: None,
                 };
                 self.generate_function(&func, &TypeOwner::Interface(intf), variant);
             }
@@ -1964,14 +2646,29 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
             for func in funcs {
                 if match &func.kind {
                     FunctionKind::Freestanding => false,
+                    FunctionKind::Getter => false,
+                    FunctionKind::Setter => false,
                     FunctionKind::Method(mid) => *mid == id,
+                    FunctionKind::MethodGetter(mid) => *mid == id,
+                    FunctionKind::MethodSetter(mid) => *mid == id,
                     FunctionKind::Static(mid) => *mid == id,
+                    FunctionKind::StaticGetter(mid) => *mid == id,
+                    FunctionKind::StaticSetter(mid) => *mid == id,
                     FunctionKind::Constructor(mid) => *mid == id,
-                    FunctionKind::AsyncFreestanding => todo!(),
-                    FunctionKind::AsyncMethod(_id) => todo!(),
-                    FunctionKind::AsyncStatic(_id) => todo!(),
+                    FunctionKind::AsyncFreestanding => false,
+                    FunctionKind::AsyncMethod(mid) => *mid == id,
+                    FunctionKind::AsyncStatic(mid) => *mid == id,
                 } {
-                    self.generate_function(func, &TypeOwner::Interface(intf), variant);
+                    let func_variant = if self.is_async(func) {
+                        if guest_import {
+                            AbiVariant::GuestImportAsync
+                        } else {
+                            AbiVariant::GuestExportAsync
+                        }
+                    } else {
+                        variant
+                    };
+                    self.generate_function(func, &TypeOwner::Interface(intf), func_variant);
                     // For non-fallible constructors on export side, generate a New allocator method
                     // For fallible constructors, the user provides their own Create method
                     let is_fallible_constructor =
@@ -1991,6 +2688,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
                             docs: Docs::default(),
                             stability: Stability::Unknown,
                             span: Default::default(),
+                            external_id: None,
                         };
                         self.generate_function(&func2, &TypeOwner::Interface(intf), variant);
                     }
@@ -2025,6 +2723,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
                     docs: Docs::default(),
                     stability: Stability::Unknown,
                     span: Default::default(),
+                    external_id: None,
                 };
                 self.generate_function(&func, &TypeOwner::Interface(intf), variant);
 
@@ -2040,6 +2739,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
                     docs: Docs::default(),
                     stability: Stability::Unknown,
                     span: Default::default(),
+                    external_id: None,
                 };
                 self.generate_function(&func1, &TypeOwner::Interface(intf), variant);
 
@@ -2055,6 +2755,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
                     docs: Docs::default(),
                     stability: Stability::Unknown,
                     span: Default::default(),
+                    external_id: None,
                 };
                 self.generate_function(&func2, &TypeOwner::Interface(intf), variant);
             }
@@ -2063,7 +2764,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
         } else if matches!(type_.owner, TypeOwner::World(_)) {
             // Handle world-level resources - treat as imported resources
             let guest_export = false; // World-level resources are treated as imports
-            let namespc = namespace(self.resolve, &type_.owner, guest_export, &self.r#gen.opts);
+            let namespc = namespace(self.resolve, &type_.owner, guest_export, &*self.r#gen);
             self.r#gen.h_src.change_namespace(&namespc);
 
             let pascal = name.to_upper_camel_case();
@@ -2099,7 +2800,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
     ) {
         let ty = &self.resolve.types[id];
         let guest_export = self.is_exported_type(ty);
-        let namespc = namespace(self.resolve, &ty.owner, guest_export, &self.r#gen.opts);
+        let namespc = namespace(self.resolve, &ty.owner, guest_export, &*self.r#gen);
         if self.r#gen.is_first_definition(&namespc, name) {
             self.r#gen.h_src.change_namespace(&namespc);
             Self::docs(&mut self.r#gen.h_src.src, docs);
@@ -2140,7 +2841,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
     ) {
         let ty = &self.resolve.types[id];
         let guest_export = self.is_exported_type(ty);
-        let namespc = namespace(self.resolve, &ty.owner, guest_export, &self.r#gen.opts);
+        let namespc = namespace(self.resolve, &ty.owner, guest_export, &*self.r#gen);
         if self.r#gen.is_first_definition(&namespc, name) {
             self.r#gen.h_src.change_namespace(&namespc);
             Self::docs(&mut self.r#gen.h_src.src, docs);
@@ -2151,7 +2852,10 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
             let mut all_types = String::new();
             for case in variant.cases.iter() {
                 Self::docs(&mut self.r#gen.h_src.src, &case.docs);
-                let case_pascal = to_c_ident(&case.name).to_pascal_case();
+                let mut case_pascal = to_c_ident(&case.name).to_pascal_case();
+                if case_pascal == pascal {
+                    case_pascal.push('_');
+                }
                 if !all_types.is_empty() {
                     all_types += ", ";
                 }
@@ -2201,7 +2905,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
     ) {
         let ty = &self.resolve.types[id];
         let guest_export = self.is_exported_type(ty);
-        let namespc = namespace(self.resolve, &ty.owner, guest_export, &self.r#gen.opts);
+        let namespc = namespace(self.resolve, &ty.owner, guest_export, &*self.r#gen);
         if self.r#gen.is_first_definition(&namespc, name) {
             self.r#gen.h_src.change_namespace(&namespc);
             let pascal = name.to_pascal_case();
@@ -2229,7 +2933,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
     ) {
         let ty = &self.resolve.types[id];
         let guest_export = self.is_exported_type(ty);
-        let namespc = namespace(self.resolve, &ty.owner, guest_export, &self.r#gen.opts);
+        let namespc = namespace(self.resolve, &ty.owner, guest_export, &*self.r#gen);
         self.r#gen.h_src.change_namespace(&namespc);
         let pascal = name.to_pascal_case();
         Self::docs(&mut self.r#gen.h_src.src, docs);
@@ -2249,13 +2953,24 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
 
     fn type_fixed_length_list(
         &mut self,
-        _id: TypeId,
-        _name: &str,
-        _ty: &wit_bindgen_core::wit_parser::Type,
-        _size: u32,
-        _docs: &wit_bindgen_core::wit_parser::Docs,
+        id: TypeId,
+        name: &str,
+        ty: &wit_bindgen_core::wit_parser::Type,
+        size: u32,
+        docs: &wit_bindgen_core::wit_parser::Docs,
     ) {
-        todo!("named fixed-length list types are not yet supported in the C++ backend")
+        let ty_def = &self.resolve.types[id];
+        let guest_export = self.is_exported_type(ty_def);
+        let namespc = namespace(self.resolve, &ty_def.owner, guest_export, &*self.r#gen);
+        self.r#gen.h_src.change_namespace(&namespc);
+        let pascal = name.to_pascal_case();
+        Self::docs(&mut self.r#gen.h_src.src, docs);
+        self.r#gen.dependencies.needs_array = true;
+        let inner = self.type_name(ty, &namespc, Flavor::InStruct);
+        uwriteln!(
+            self.r#gen.h_src.src,
+            "using {pascal} = std::array<{inner}, {size}>;"
+        );
     }
 
     fn type_map(
@@ -2266,7 +2981,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
         _value: &wit_bindgen_core::wit_parser::Type,
         _docs: &wit_bindgen_core::wit_parser::Docs,
     ) {
-        todo!("map types are not yet supported in the C++ backend")
+        // nothing to do here
     }
 
     fn type_builtin(
@@ -2279,12 +2994,40 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for CppInterfaceGenerator<'a> 
         todo!()
     }
 
-    fn type_future(&mut self, _id: TypeId, _name: &str, _ty: &Option<Type>, _docs: &Docs) {
-        todo!()
+    fn type_future(&mut self, id: TypeId, name: &str, ty: &Option<Type>, docs: &Docs) {
+        let ty_def = &self.resolve.types[id];
+        let guest_export = self.is_exported_type(ty_def);
+        let namespc = namespace(self.resolve, &ty_def.owner, guest_export, &*self.r#gen);
+        self.r#gen.h_src.change_namespace(&namespc);
+        let pascal = name.to_pascal_case();
+        Self::docs(&mut self.r#gen.h_src.src, docs);
+        self.r#gen.dependencies.needs_wit = true;
+        let inner = match ty {
+            Some(t) => self.type_name(t, &namespc, Flavor::InStruct),
+            None => "void".to_string(),
+        };
+        uwriteln!(
+            self.r#gen.h_src.src,
+            "using {pascal} = wit::FutureReader<{inner}>;"
+        );
     }
 
-    fn type_stream(&mut self, _id: TypeId, _name: &str, _ty: &Option<Type>, _docs: &Docs) {
-        todo!()
+    fn type_stream(&mut self, id: TypeId, name: &str, ty: &Option<Type>, docs: &Docs) {
+        let ty_def = &self.resolve.types[id];
+        let guest_export = self.is_exported_type(ty_def);
+        let namespc = namespace(self.resolve, &ty_def.owner, guest_export, &*self.r#gen);
+        self.r#gen.h_src.change_namespace(&namespc);
+        let pascal = name.to_pascal_case();
+        Self::docs(&mut self.r#gen.h_src.src, docs);
+        self.r#gen.dependencies.needs_wit = true;
+        let inner = match ty {
+            Some(t) => self.type_name(t, &namespc, Flavor::InStruct),
+            None => "void".to_string(),
+        };
+        uwriteln!(
+            self.r#gen.h_src.src,
+            "using {pascal} = wit::StreamReader<{inner}>;"
+        );
     }
 }
 
@@ -2308,6 +3051,7 @@ struct FunctionBindgen<'a, 'b> {
     variant: AbiVariant,
     cabi_post: Option<CabiPostInformation>,
     needs_dealloc: bool,
+    has_result: bool,
     leak_on_insertion: Option<String>,
     return_pointer_area_size: ArchitectureSize,
     return_pointer_area_align: Alignment,
@@ -2327,6 +3071,7 @@ impl<'a, 'b> FunctionBindgen<'a, 'b> {
             variant: AbiVariant::GuestImport,
             cabi_post: None,
             needs_dealloc: false,
+            has_result: false,
             leak_on_insertion: None,
             return_pointer_area_size: Default::default(),
             return_pointer_area_align: Default::default(),
@@ -2394,8 +3139,7 @@ impl<'a, 'b> FunctionBindgen<'a, 'b> {
     fn store(&mut self, ty: &str, offset: ArchitectureSize, operands: &[String]) {
         uwriteln!(
             self.src,
-            "*(({}*)({} + {})) = {};",
-            ty,
+            "*(({ty}*)({} + {})) = ({ty})({});",
             operands[1],
             offset.format(POINTER_SIZE_EXPRESSION),
             operands[0]
@@ -2415,6 +3159,12 @@ impl<'a, 'b> FunctionBindgen<'a, 'b> {
     ///
     /// The scratch space is reused but never accessed simultaneously.
     fn emit_ret_area_if_needed(&self) -> String {
+        let mut prefix = String::new();
+        if self.variant == AbiVariant::GuestImportAsync {
+            prefix.push_str(
+                "[[maybe_unused]] wit::detail::SubtaskAwaiter::CleanupList _subtask_cleanup;\n",
+            );
+        }
         if !self.return_pointer_area_size.is_empty() {
             let size_string = self
                 .return_pointer_area_size
@@ -2437,9 +3187,11 @@ impl<'a, 'b> FunctionBindgen<'a, 'b> {
             } else {
                 "static "
             };
-            format!("{static_var}{tp} ret_area[({size_string}+sizeof({tp})-1)/sizeof({tp})];\n")
+            format!(
+                "{prefix}{static_var}{tp} ret_area[({size_string}+sizeof({tp})-1)/sizeof({tp})];\n"
+            )
         } else {
-            String::new()
+            prefix
         }
     }
 }
@@ -2881,10 +3633,12 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                 let op = &operands[0];
                 match (handle, false) {
                     (Handle::Own(ty), true) => match self.variant {
-                        AbiVariant::GuestExport => {
+                        AbiVariant::GuestExport
+                        | AbiVariant::GuestExportAsync
+                        | AbiVariant::GuestExportAsyncStackful => {
                             results.push(format!("wit::{RESOURCE_EXPORT_BASE_CLASS_NAME}{{{op}}}"))
                         }
-                        AbiVariant::GuestImport => {
+                        AbiVariant::GuestImport | AbiVariant::GuestImportAsync => {
                             let tmp = self.tmp();
                             let var = self.tempname("obj", tmp);
                             let tname = self.r#gen.type_name(
@@ -2899,15 +3653,14 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                             );
                             results.push(format!("{tname}::Owned(*{var})"));
                         }
-                        AbiVariant::GuestImportAsync => todo!(),
-                        AbiVariant::GuestExportAsync => todo!(),
-                        AbiVariant::GuestExportAsyncStackful => todo!(),
                     },
                     (Handle::Own(ty), false) => match self.variant {
-                        AbiVariant::GuestImport => {
+                        AbiVariant::GuestImport | AbiVariant::GuestImportAsync => {
                             results.push(format!("wit::{RESOURCE_IMPORT_BASE_CLASS_NAME}{{{op}}}"))
                         }
-                        AbiVariant::GuestExport => {
+                        AbiVariant::GuestExport
+                        | AbiVariant::GuestExportAsync
+                        | AbiVariant::GuestExportAsyncStackful => {
                             let tmp = self.tmp();
                             let var = self.tempname("obj", tmp);
                             let tname = self.r#gen.type_name(
@@ -2940,9 +3693,6 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
 
                             results.push(format!("std::move({var})"))
                         }
-                        AbiVariant::GuestImportAsync => todo!(),
-                        AbiVariant::GuestExportAsync => todo!(),
-                        AbiVariant::GuestExportAsyncStackful => todo!(),
                     },
                     (Handle::Borrow(ty), true) => {
                         let tname = self.r#gen.type_name(
@@ -2953,8 +3703,12 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                         results.push(format!("**{tname}::lookup_resource({op})"));
                     }
                     (Handle::Borrow(ty), false) => match self.variant {
-                        AbiVariant::GuestImport => results.push(op.clone()),
-                        AbiVariant::GuestExport => {
+                        AbiVariant::GuestImport | AbiVariant::GuestImportAsync => {
+                            results.push(op.clone())
+                        }
+                        AbiVariant::GuestExport
+                        | AbiVariant::GuestExportAsync
+                        | AbiVariant::GuestExportAsyncStackful => {
                             let tname = self.r#gen.type_name(
                                 &Type::Id(*ty),
                                 &self.namespace,
@@ -2962,9 +3716,6 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                             );
                             results.push(format!("std::ref(*({tname} *){op})"));
                         }
-                        AbiVariant::GuestImportAsync => todo!(),
-                        AbiVariant::GuestExportAsync => todo!(),
-                        AbiVariant::GuestExportAsyncStackful => todo!(),
                     },
                 }
             }
@@ -3069,14 +3820,23 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                     self.r#gen
                         .type_name(&Type::Id(*var_ty), &self.namespace, Flavor::InStruct);
 
+                let var_pascal = self.r#gen.resolve.types[*var_ty]
+                    .name
+                    .as_ref()
+                    .unwrap()
+                    .to_pascal_case();
+
                 uwriteln!(self.src, "switch ((int32_t) {}) {{", expr_to_match);
                 for (i, ((case, (block, block_results)), payload)) in
                     variant.cases.iter().zip(blocks).zip(payloads).enumerate()
                 {
                     uwriteln!(self.src, "case {}: {{", i);
                     if case.ty.is_some() {
-                        let case =
-                            format!("{elem_ns}::{}", to_c_ident(&case.name).to_pascal_case());
+                        let mut case_pascal = to_c_ident(&case.name).to_pascal_case();
+                        if case_pascal == var_pascal {
+                            case_pascal.push('_');
+                        }
+                        let case = format!("{elem_ns}::{case_pascal}");
                         uwriteln!(
                             self.src,
                             "auto& {} = std::get<{case}>({}.variants).value;",
@@ -3100,6 +3860,11 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                     .drain(self.blocks.len() - variant.cases.len()..)
                     .collect::<Vec<_>>();
 
+                let var_pascal = self.r#gen.resolve.types[*ty]
+                    .name
+                    .as_ref()
+                    .unwrap()
+                    .to_pascal_case();
                 let ty = self
                     .r#gen
                     .type_name(&Type::Id(*ty), &self.namespace, Flavor::InStruct);
@@ -3115,7 +3880,10 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                 for (i, (case, (block, block_results))) in
                     variant.cases.iter().zip(blocks).enumerate()
                 {
-                    let tp = to_c_ident(&case.name).to_pascal_case();
+                    let mut tp = to_c_ident(&case.name).to_pascal_case();
+                    if tp == var_pascal {
+                        tp.push('_');
+                    }
                     uwriteln!(self.src, "case {i}: {{ {block}");
                     uwriteln!(
                         self.src,
@@ -3161,24 +3929,17 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                 }
 
                 let op0 = &operands[0];
-                let flavor = if matches!(self.variant, AbiVariant::GuestImport) {
-                    Flavor::BorrowedArgument
-                } else {
-                    Flavor::InStruct
-                };
-                let ty = self.r#gen.type_name(payload, &self.namespace, flavor);
                 let is_function_param = self.params.iter().any(|p| p == op0);
                 let value_extract = if matches!(payload, Type::String)
                     && matches!(self.variant, AbiVariant::GuestImport)
                     && !is_function_param
                 {
                     // Import from struct/variant field: optional<wit::string> needs .get_view()
-                    format!("(std::move({op0})).value().get_view()")
+                    format!("({op0}).value().get_view()")
                 } else {
-                    // Direct parameter, export, or non-string: just .value()
-                    format!("(std::move({op0})).value()")
+                    format!("({op0}).value()")
                 };
-                let bind_some = format!("{ty} {some_payload} = {value_extract};");
+                let bind_some = format!("auto&& {some_payload} = {value_extract};");
 
                 uwrite!(
                     self.src,
@@ -3244,23 +4005,13 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                 }
 
                 let op0 = &operands[0];
-                let ok_ty = self.r#gen.optional_type_name(
-                    result.ok.as_ref(),
-                    &self.namespace,
-                    Flavor::InStruct,
-                );
-                let err_ty = self.r#gen.optional_type_name(
-                    result.err.as_ref(),
-                    &self.namespace,
-                    Flavor::InStruct,
-                );
-                let bind_ok = if let Some(_ok) = result.ok.as_ref() {
-                    format!("{ok_ty} {ok_payload} = std::move({op0}).value();")
+                let bind_ok = if result.ok.is_some() {
+                    format!("auto&& {ok_payload} = *({op0});")
                 } else {
                     String::new()
                 };
-                let bind_err = if let Some(_err) = result.err.as_ref() {
-                    format!("{err_ty} {err_payload} = std::move({op0}).error();")
+                let bind_err = if result.err.is_some() {
+                    format!("auto&& {err_payload} = ({op0}).error();")
                 } else {
                     String::new()
                 };
@@ -3344,13 +4095,26 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                     })
                     .unwrap();
 
-                let func = self
-                    .r#gen
-                    .declare_import(&module_name, name, &sig.params, &sig.results);
+                let import_name = if self.variant == AbiVariant::GuestImportAsync {
+                    format!("[async-lower]{name}")
+                } else {
+                    name.to_string()
+                };
+
+                let func = self.r#gen.declare_import(
+                    &module_name,
+                    &import_name,
+                    &sig.params,
+                    &sig.results,
+                );
 
                 // ... then call the function with all our operands
                 if !sig.results.is_empty() {
-                    self.src.push_str("auto ret = ");
+                    if self.variant == AbiVariant::GuestImportAsync {
+                        self.src.push_str("[[maybe_unused]] auto ret = ");
+                    } else {
+                        self.src.push_str("auto ret = ");
+                    }
                     results.push("ret".to_string());
                 }
                 self.src.push_str(&func);
@@ -3363,29 +4127,83 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                         .join(", "),
                 );
                 self.src.push_str(");\n");
-            }
-            abi::Instruction::CallInterface { func, .. } => {
-                // dbg!(func);
-                self.let_results(if func.result.is_some() { 1 } else { 0 }, results);
-                let (namespace, func_name_h) = self.r#gen.func_namespace_name(func, true, true);
-                if matches!(func.kind, FunctionKind::Method(_)) {
-                    let this = operands.remove(0);
-                    uwrite!(self.src, "({this}).get().");
-                } else {
-                    let mut relative = SourceWithState::default();
-                    relative.qualify(&namespace);
-                    self.push_str(&relative.src);
+                if self.variant == AbiVariant::GuestImportAsync {
+                    uwriteln!(
+                        self.src,
+                        "if ((ret & 0xfU) != wit::SUBTASK_RETURNED) {{
+                            co_await wit::detail::SubtaskAwaiter{{static_cast<uint32_t>(ret), std::move(_subtask_cleanup)}};
+                        }}"
+                    );
                 }
-                self.src.push_str(&func_name_h);
-                self.push_str("(");
-                self.push_str(
-                    &operands
-                        .iter()
-                        .map(|op| move_if_necessary(op))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                self.push_str(");\n");
+            }
+            abi::Instruction::CallInterface { func, async_ } => {
+                // dbg!(func);
+                let (namespace, func_name_h) = self.r#gen.func_namespace_name(func, true, true);
+                if *async_ {
+                    let sig = self.r#gen.resolve.wasm_signature(self.variant, func);
+                    let task_ret = self.tmp();
+                    uwrite!(self.src, "auto task{task_ret} = ");
+                    if matches!(
+                        func.kind,
+                        FunctionKind::Method(_)
+                            | FunctionKind::MethodGetter(_)
+                            | FunctionKind::MethodSetter(_)
+                            | FunctionKind::AsyncMethod(_)
+                    ) {
+                        let this = operands.remove(0);
+                        uwrite!(self.src, "({this}).get().");
+                    } else {
+                        let mut relative = SourceWithState::default();
+                        relative.qualify(&namespace);
+                        self.push_str(&relative.src);
+                    }
+                    self.src.push_str(&func_name_h);
+                    self.push_str("(");
+                    self.push_str(
+                        &operands
+                            .iter()
+                            .map(|op| move_if_necessary(op))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    self.push_str(");\n");
+                    if sig.indirect_params {
+                        uwriteln!(self.src, "free((void*) (arg0));");
+                    }
+                    if func.result.is_some() {
+                        let ret = self.tmp();
+                        uwriteln!(self.src, "auto ret{ret} = co_await task{task_ret};");
+                        results.push(format!("ret{ret}"));
+                    } else {
+                        uwriteln!(self.src, "co_await task{task_ret};");
+                    }
+                } else {
+                    self.let_results(if func.result.is_some() { 1 } else { 0 }, results);
+                    if matches!(
+                        func.kind,
+                        FunctionKind::Method(_)
+                            | FunctionKind::MethodGetter(_)
+                            | FunctionKind::MethodSetter(_)
+                            | FunctionKind::AsyncMethod(_)
+                    ) {
+                        let this = operands.remove(0);
+                        uwrite!(self.src, "({this}).get().");
+                    } else {
+                        let mut relative = SourceWithState::default();
+                        relative.qualify(&namespace);
+                        self.push_str(&relative.src);
+                    }
+                    self.src.push_str(&func_name_h);
+                    self.push_str("(");
+                    self.push_str(
+                        &operands
+                            .iter()
+                            .map(|op| move_if_necessary(op))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    self.push_str(");\n");
+                }
                 if self.needs_dealloc {
                     uwriteln!(
                         self.src,
@@ -3486,17 +4304,19 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                 let len = self.tempname("_len", tmp);
                 uwriteln!(self.src, "uint8_t* {ptr} = {};", operands[0]);
                 uwriteln!(self.src, "size_t {len} = {};", operands[1]);
-                let i = self.tempname("i", tmp);
-                uwriteln!(self.src, "for (size_t {i} = 0; {i} < {len}; {i}++) {{");
-                let size = self.r#gen.sizes.size(element);
-                uwriteln!(
-                    self.src,
-                    "uint8_t* _base = {ptr} + {i} * {size};",
-                    size = size.format(POINTER_SIZE_EXPRESSION)
-                );
-                uwriteln!(self.src, "(void) _base;");
-                uwrite!(self.src, "{body}");
-                uwriteln!(self.src, "}}");
+                if !body.trim().is_empty() {
+                    let i = self.tempname("i", tmp);
+                    uwriteln!(self.src, "for (size_t {i} = 0; {i} < {len}; {i}++) {{");
+                    let size = self.r#gen.sizes.size(element);
+                    uwriteln!(
+                        self.src,
+                        "uint8_t* _base = {ptr} + {i} * {size};",
+                        size = size.format(POINTER_SIZE_EXPRESSION)
+                    );
+                    uwriteln!(self.src, "(void) _base;");
+                    uwrite!(self.src, "{body}");
+                    uwriteln!(self.src, "}}");
+                }
                 uwriteln!(self.src, "if ({len} > 0) {{");
                 uwriteln!(self.src, "free((void*) ({ptr}));");
                 uwriteln!(self.src, "}}");
@@ -3528,12 +4348,45 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                 self.store(ptr_type, *offset, operands)
             }
             abi::Instruction::LengthStore { offset } => self.store("size_t", *offset, operands),
-            abi::Instruction::FutureLower { .. } => todo!(),
-            abi::Instruction::FutureLift { .. } => todo!(),
-            abi::Instruction::StreamLower { .. } => todo!(),
-            abi::Instruction::StreamLift { .. } => todo!(),
-            abi::Instruction::ErrorContextLower { .. } => todo!(),
-            abi::Instruction::ErrorContextLift { .. } => todo!(),
+            abi::Instruction::FutureLower { .. } => {
+                if self.variant == AbiVariant::GuestImportAsync {
+                    results.push(format!(
+                        "((int32_t) ({}).into_subtask_handle(_subtask_cleanup))",
+                        operands[0]
+                    ));
+                } else {
+                    results.push(format!("((int32_t) ({}).into_handle())", operands[0]));
+                }
+            }
+            abi::Instruction::FutureLift { ty, .. } => {
+                let ty_name =
+                    self.r#gen
+                        .type_name(&Type::Id(*ty), &self.namespace, Flavor::InStruct);
+                results.push(format!("{ty_name}({})", operands[0]));
+            }
+            abi::Instruction::StreamLower { .. } => {
+                if self.variant == AbiVariant::GuestImportAsync {
+                    results.push(format!(
+                        "((int32_t) ({}).into_subtask_handle(_subtask_cleanup))",
+                        operands[0]
+                    ));
+                } else {
+                    results.push(format!("((int32_t) ({}).into_handle())", operands[0]));
+                }
+            }
+            abi::Instruction::StreamLift { ty, .. } => {
+                let ty_name =
+                    self.r#gen
+                        .type_name(&Type::Id(*ty), &self.namespace, Flavor::InStruct);
+                results.push(format!("{ty_name}({})", operands[0]));
+            }
+            abi::Instruction::ErrorContextLower { .. } => {
+                results.push(format!("((int32_t) ({}).into_handle())", operands[0]));
+            }
+            abi::Instruction::ErrorContextLift { .. } => {
+                self.r#gen.r#gen.dependencies.needs_wit = true;
+                results.push(format!("wit::ErrorContext({})", operands[0]));
+            }
             abi::Instruction::Flush { amt } => {
                 for i in operands.iter().take(*amt) {
                     let tmp = self.tmp();
@@ -3542,30 +4395,195 @@ impl<'a, 'b> Bindgen for FunctionBindgen<'a, 'b> {
                     results.push(result);
                 }
             }
-            abi::Instruction::AsyncTaskReturn { .. } => todo!(),
-            abi::Instruction::DropHandle { .. } => todo!(),
-            abi::Instruction::MapLower { .. }
-            | abi::Instruction::MapLift { .. }
-            | abi::Instruction::IterMapKey { .. }
-            | abi::Instruction::IterMapValue { .. }
-            | abi::Instruction::GuestDeallocateMap { .. } => {
-                todo!("map types are not yet supported in this backend")
+            abi::Instruction::AsyncTaskReturn { name, params } => match self.variant {
+                AbiVariant::GuestImport | AbiVariant::GuestImportAsync => {
+                    if self.has_result && !operands.is_empty() {
+                        uwriteln!(self.src, "co_return {};", operands[0]);
+                    } else {
+                        if !operands.is_empty() {
+                            uwriteln!(self.src, "(void) {};", operands[0]);
+                        }
+                        uwriteln!(self.src, "co_return;");
+                    }
+                }
+                AbiVariant::GuestExport
+                | AbiVariant::GuestExportAsync
+                | AbiVariant::GuestExportAsyncStackful => {
+                    let module_name = format!(
+                        "[export]{}",
+                        self.r#gen.wasm_import_module.as_deref().unwrap_or("$root")
+                    );
+                    let wasm_func = self.r#gen.declare_import(&module_name, name, params, &[]);
+                    uwriteln!(self.src, "{wasm_func}({});", operands.join(", "));
+                    if matches!(
+                        self.variant,
+                        AbiVariant::GuestExportAsync | AbiVariant::GuestExportAsyncStackful
+                    ) {
+                        uwriteln!(self.src, "co_return;");
+                    }
+                }
+            },
+            abi::Instruction::DropHandle { .. } => {
+                uwriteln!(self.src, "(void) {};", operands[0]);
+            }
+            abi::Instruction::MapLower {
+                key,
+                value,
+                realloc,
+            } => {
+                let tmp = self.tmp();
+                let body = self.blocks.pop().unwrap();
+                let val = format!("map{tmp}");
+                let ptr = format!("ptr{tmp}");
+                let len = format!("len{tmp}");
+                let entry = self.r#gen.sizes.record([*key, *value]);
+                let size = entry.size.format(POINTER_SIZE_EXPRESSION);
+                let align = entry.align.format(POINTER_SIZE_EXPRESSION);
+                // The canonical ABI entry layout can differ from the C++ entry
+                // layout (see wit-bindgen#1592), so always allocate a fresh ABI
+                // buffer rather than reusing the source map's storage.
+                self.push_str(&format!("auto&& {val} = {};\n", operands[0]));
+                self.push_str(&format!("auto {len} = {val}.size();\n"));
+                uwriteln!(
+                    self.src,
+                    "auto {ptr} = static_cast<{ptr_type}>({len} > 0 ? cabi_realloc(nullptr, 0, {align}, {len} * {size}) : nullptr);",
+                    ptr_type = self.r#gen.r#gen.opts.ptr_type()
+                );
+                uwriteln!(self.src, "for (size_t i = 0; i < {len}; ++i) {{");
+                uwriteln!(self.src, "auto _base = {ptr} + i * {size};");
+                uwriteln!(self.src, "(void) _base;");
+                uwriteln!(self.src, "auto&& iter_entry = {val}.data()[i];");
+                uwriteln!(self.src, "auto&& iter_map_key = iter_entry.first;");
+                uwriteln!(self.src, "auto&& iter_map_value = iter_entry.second;");
+                uwrite!(self.src, "{}", body.0);
+                uwriteln!(self.src, "}}");
+                if realloc.is_some() {
+                    uwriteln!(self.src, "{}.leak();", operands[0]);
+                }
+                results.push(ptr);
+                results.push(len);
+            }
+            abi::Instruction::MapLift { key, value, .. } => {
+                let body = self.blocks.pop().unwrap();
+                let tmp = self.tmp();
+                let entry = self.r#gen.sizes.record([*key, *value]);
+                let size = entry.size.format(POINTER_SIZE_EXPRESSION);
+                let flavor = if self.r#gen.r#gen.opts.api_style == APIStyle::Symmetric
+                    && matches!(self.variant, AbiVariant::GuestExport)
+                {
+                    Flavor::BorrowedArgument
+                } else {
+                    Flavor::InStruct
+                };
+                let key_type = self.r#gen.type_name(key, &self.namespace, flavor);
+                let value_type = self.r#gen.type_name(value, &self.namespace, flavor);
+                let len = format!("len{tmp}");
+                let base = format!("base{tmp}");
+                let result = format!("result{tmp}");
+                uwriteln!(self.src, "auto {base} = {};", operands[0]);
+                uwriteln!(self.src, "auto {len} = {};", operands[1]);
+                uwriteln!(
+                    self.src,
+                    "auto {result} = wit::unordered_map<{key_type}, {value_type}>::allocate({len});"
+                );
+                if self.r#gen.r#gen.opts.api_style == APIStyle::Symmetric
+                    && matches!(self.variant, AbiVariant::GuestExport)
+                {
+                    assert!(self.needs_dealloc);
+                    uwriteln!(self.src, "if ({len}>0) _deallocate.push_back({base});");
+                }
+                uwriteln!(self.src, "for (unsigned i=0; i<{len}; ++i) {{");
+                uwriteln!(self.src, "auto _base = {base} + i * {size};");
+                uwriteln!(self.src, "(void) _base;");
+                uwrite!(self.src, "{}", body.0);
+                let body_key = &body.1[0];
+                let body_value = &body.1[1];
+                uwriteln!(
+                    self.src,
+                    "{result}.initialize(i, std::make_pair({}, {}));",
+                    move_if_necessary(body_key),
+                    move_if_necessary(body_value)
+                );
+                uwriteln!(self.src, "}}");
+
+                if self.r#gen.r#gen.opts.api_style == APIStyle::Symmetric
+                    && matches!(self.variant, AbiVariant::GuestExport)
+                {
+                    self.r#gen.r#gen.dependencies.needs_wit = true;
+                    self.r#gen.r#gen.dependencies.needs_span = true;
+                    results.push(format!(
+                        "std::span<std::pair<{key_type}, {value_type}> const>({result}.data(), {result}.size())"
+                    ));
+                    self.leak_on_insertion.replace(format!(
+                        "if ({len}>0) _deallocate.push_back((void*){result}.leak());\n"
+                    ));
+                } else {
+                    results.push(move_if_necessary(&result));
+                }
+            }
+            abi::Instruction::IterMapKey { .. } => {
+                results.push("iter_map_key".to_string());
+            }
+            abi::Instruction::IterMapValue { .. } => {
+                results.push("iter_map_value".to_string());
+            }
+            abi::Instruction::GuestDeallocateMap { key, value } => {
+                let (body, results) = self.blocks.pop().unwrap();
+                assert!(results.is_empty());
+                let tmp = self.tmp();
+                let ptr = self.tempname("_ptr", tmp);
+                let len = self.tempname("_len", tmp);
+                uwriteln!(self.src, "uint8_t* {ptr} = {};", operands[0]);
+                uwriteln!(self.src, "size_t {len} = {};", operands[1]);
+                if !body.trim().is_empty() {
+                    let i = self.tempname("i", tmp);
+                    uwriteln!(self.src, "for (size_t {i} = 0; {i} < {len}; {i}++) {{");
+                    let entry = self.r#gen.sizes.record([*key, *value]);
+                    let size = entry.size.format(POINTER_SIZE_EXPRESSION);
+                    uwriteln!(self.src, "uint8_t* _base = {ptr} + {i} * {size};");
+                    uwriteln!(self.src, "(void) _base;");
+                    uwrite!(self.src, "{body}");
+                    uwriteln!(self.src, "}}");
+                }
+                uwriteln!(self.src, "if ({len} > 0) {{");
+                uwriteln!(self.src, "free((void*) ({ptr}));");
+                uwriteln!(self.src, "}}");
             }
         }
     }
 
     fn return_pointer(&mut self, size: ArchitectureSize, align: Alignment) -> Self::Operand {
+        let tmp = self.tmp();
+        let ptr_type = self.r#gen.r#gen.opts.ptr_type();
+        if matches!(
+            self.variant,
+            AbiVariant::GuestImportAsync
+                | AbiVariant::GuestExportAsync
+                | AbiVariant::GuestExportAsyncStackful
+        ) {
+            if size.is_empty() {
+                uwriteln!(self.src, "{ptr_type} ptr{tmp} = nullptr;");
+            } else {
+                uwriteln!(
+                    self.src,
+                    "alignas({align}) uint8_t ret_area{tmp}[{size}];",
+                    align = align.format(POINTER_SIZE_EXPRESSION),
+                    size = size.format(POINTER_SIZE_EXPRESSION),
+                );
+                uwriteln!(
+                    self.src,
+                    "{ptr_type} ptr{tmp} = ({ptr_type})(&ret_area{tmp});"
+                );
+            }
+            return format!("ptr{tmp}");
+        }
+
         // Track maximum return area requirements
         self.return_pointer_area_size = self.return_pointer_area_size.max(size);
         self.return_pointer_area_align = self.return_pointer_area_align.max(align);
 
         // Generate pointer to shared ret_area
-        let tmp = self.tmp();
-        uwriteln!(
-            self.src,
-            "{} ptr{tmp} = ({0})(&ret_area);",
-            self.r#gen.r#gen.opts.ptr_type(),
-        );
+        uwriteln!(self.src, "{ptr_type} ptr{tmp} = ({ptr_type})(&ret_area);");
 
         format!("ptr{tmp}")
     }
@@ -3628,4 +4646,163 @@ fn is_special_method(func: &Function) -> SpecialMethod {
     } else {
         SpecialMethod::None
     }
+}
+
+/// Sort the specified types topologically, taking the parameter and result
+/// types of resource functions into consideration.
+fn reaches_hard(resolve: &Resolve, start: TypeId, targets: &HashSet<TypeId>) -> bool {
+    struct HardChecker<'a> {
+        targets: &'a HashSet<TypeId>,
+        seen: HashSet<TypeId>,
+        found: bool,
+    }
+
+    impl TypeIdVisitor for HardChecker<'_> {
+        fn before_visit_type_id(&mut self, id: TypeId) -> bool {
+            if self.found {
+                return false;
+            }
+            if self.targets.contains(&id) {
+                self.found = true;
+                return false;
+            }
+            self.seen.insert(id)
+        }
+    }
+
+    let mut checker = HardChecker {
+        targets,
+        seen: HashSet::new(),
+        found: false,
+    };
+    checker.visit_type_id(resolve, start);
+    checker.found
+}
+
+fn sort_types<'a>(
+    resolve: &Resolve,
+    types: &'a IndexMap<String, TypeId>,
+) -> IndexMap<&'a str, TypeId> {
+    struct Visitor<'a> {
+        resolve: &'a Resolve,
+        sorted: IndexSet<TypeId>,
+        active: HashSet<TypeId>,
+    }
+
+    impl Visitor<'_> {
+        fn visit_soft_type(&mut self, ty: &Type) {
+            let Type::Id(tid) = *ty else {
+                return;
+            };
+            if self.sorted.contains(&tid) || self.active.contains(&tid) {
+                return;
+            }
+            if !reaches_hard(self.resolve, tid, &self.active) {
+                self.visit_type_id(self.resolve, tid);
+                return;
+            }
+            // `tid` transitively embeds an active resource by value (e.g. a record
+            // holding an owned handle to this resource), so a record/variant must be
+            // emitted after the resource (relying on its forward declaration). Still
+            // unwrap structural wrappers and `using` aliases so inner non-cyclic types
+            // (like enums or aliases) are emitted before the resource.
+            match &self.resolve.types[tid].kind {
+                TypeDefKind::Record(_) | TypeDefKind::Variant(_) | TypeDefKind::Resource => {}
+                TypeDefKind::Option(inner) | TypeDefKind::List(inner) => {
+                    self.visit_soft_type(inner);
+                }
+                TypeDefKind::Type(inner) | TypeDefKind::FixedLengthList(inner, _) => {
+                    self.visit_soft_type(inner);
+                    self.sorted.insert(tid);
+                }
+                TypeDefKind::Future(inner) | TypeDefKind::Stream(inner) => {
+                    if let Some(inner) = inner {
+                        self.visit_soft_type(inner);
+                    }
+                    self.sorted.insert(tid);
+                }
+                TypeDefKind::Result(r) => {
+                    if let Some(ok) = &r.ok {
+                        self.visit_soft_type(ok);
+                    }
+                    if let Some(err) = &r.err {
+                        self.visit_soft_type(err);
+                    }
+                }
+                TypeDefKind::Tuple(t) => {
+                    for elem in &t.types {
+                        self.visit_soft_type(elem);
+                    }
+                }
+                TypeDefKind::Map(k, v) => {
+                    self.visit_soft_type(k);
+                    self.visit_soft_type(v);
+                }
+                TypeDefKind::Handle(_) | TypeDefKind::Flags(_) | TypeDefKind::Enum(_) => {
+                    self.sorted.insert(tid);
+                }
+                TypeDefKind::Unknown => unreachable!(),
+            }
+        }
+    }
+
+    impl TypeIdVisitor for Visitor<'_> {
+        fn before_visit_type_id(&mut self, id: TypeId) -> bool {
+            if self.sorted.contains(&id) || self.active.contains(&id) {
+                return false;
+            }
+            self.active.insert(id);
+
+            let ty = &self.resolve.types[id];
+            if let TypeDefKind::Resource = &ty.kind {
+                // TypeIdVisitor does not consider the parameter and return
+                // types of resource associated functions to be transitive
+                // types, so we handle them as soft dependencies (yielding to
+                // hard value-layout dependencies if a cycle exists).
+                if let TypeOwner::Interface(interface) = ty.owner {
+                    for function in self.resolve.interfaces[interface].functions.values() {
+                        if let Some(resource) = function.kind.resource()
+                            && resource == id
+                        {
+                            for parameter in &function.params {
+                                self.visit_soft_type(&parameter.ty);
+                            }
+
+                            if let Some(ty) = function.result {
+                                self.visit_soft_type(&ty);
+                            }
+                        }
+                    }
+                }
+            }
+
+            true
+        }
+
+        fn after_visit_type_id(&mut self, id: TypeId) {
+            self.active.remove(&id);
+            self.sorted.insert(id);
+        }
+    }
+
+    let mut visitor = Visitor {
+        resolve,
+        sorted: Default::default(),
+        active: Default::default(),
+    };
+
+    for &id in types.values() {
+        visitor.visit_type_id(resolve, id);
+    }
+
+    let names = types
+        .iter()
+        .map(|(k, v)| (*v, k.as_str()))
+        .collect::<HashMap<_, _>>();
+
+    visitor
+        .sorted
+        .into_iter()
+        .filter_map(|v| names.get(&v).map(|k| (*k, v)))
+        .collect()
 }

@@ -2,6 +2,7 @@ use crate::csharp_ident::ToCSharpIdent;
 use crate::function::ResourceInfo;
 use crate::interface::{InterfaceFragment, InterfaceGenerator, InterfaceTypeAndFragments};
 use crate::{CSharpRuntime, Opts};
+use anyhow::Result;
 use heck::ToUpperCamelCase;
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
@@ -144,7 +145,7 @@ impl CSharp {
 }
 
 impl WorldGenerator for CSharp {
-    fn preprocess(&mut self, resolve: &Resolve, world: WorldId) {
+    fn preprocess(&mut self, resolve: &Resolve, world: WorldId) -> anyhow::Result<()> {
         let name = &resolve.worlds[world].name;
         self.types.analyze(resolve);
         self.types.collect_equal_types(resolve, world, &|a| {
@@ -170,7 +171,8 @@ impl WorldGenerator for CSharp {
             }
         });
         self.name = name.to_string();
-        self.sizes.fill(resolve);
+        self.sizes.fill(resolve)?;
+        Ok(())
     }
 
     fn import_interface(
@@ -228,7 +230,7 @@ impl WorldGenerator for CSharp {
         world: WorldId,
         funcs: &[(&str, &Function)],
         _files: &mut Files,
-    ) {
+    ) -> Result<()> {
         self.import_funcs_called = true;
 
         let name = &format!("{}-world", resolve.worlds[world].name).to_upper_camel_case();
@@ -254,6 +256,7 @@ impl WorldGenerator for CSharp {
         }
 
         r#gen.add_world_fragment(Some(Direction::Import));
+        Ok(())
     }
 
     fn export_interface(
@@ -363,7 +366,7 @@ impl WorldGenerator for CSharp {
         world: WorldId,
         types: &[(&str, TypeId)],
         _files: &mut Files,
-    ) {
+    ) -> Result<()> {
         let name = &format!("{}-world", resolve.worlds[world].name).to_upper_camel_case();
         let name = &format!("{name}.I{name}Imports");
         let mut r#gen = self.interface(resolve, name, Direction::Import, false);
@@ -378,12 +381,13 @@ impl WorldGenerator for CSharp {
         r#gen.csharp_gen.world_resources = new_resources;
 
         r#gen.add_world_fragment(Some(Direction::Import));
+        Ok(())
     }
 
     fn finish(&mut self, resolve: &Resolve, id: WorldId, files: &mut Files) -> anyhow::Result<()> {
         if !self.import_funcs_called {
             // Ensure that we emit type declarations for any top-level imported resource types:
-            self.import_funcs(resolve, id, &[], files);
+            self.import_funcs(resolve, id, &[], files)?;
         }
 
         let world = &resolve.worlds[id];
@@ -430,6 +434,7 @@ impl WorldGenerator for CSharp {
                 using System.Collections.Concurrent;
                 using System.Threading;
                 using System.Threading.Tasks;
+                using System.Collections.Generic;
             "
         );
         uwrite!(
@@ -825,14 +830,6 @@ impl WorldGenerator for CSharp {
                 );
             }
 
-            // For the time being, we generate both a .wit file and a .o file to
-            // represent the component type.  Newer releases of the .NET runtime
-            // will be able to use the former, but older ones will need the
-            // latter.
-            //
-            // TODO: stop generating the .o file once a new-enough release is
-            // available for us to test using only the .wit file.
-
             {
                 // When generating a WIT file, we first round-trip through the
                 // binary encoding.  This has the effect of flattening any
@@ -845,9 +842,14 @@ impl WorldGenerator for CSharp {
                 // intended to be used non-interactively at link time, the
                 // linker will have no additional information to resolve such
                 // ambiguity.
-                let (resolve, world) = wit_parser::decoding::decode_world(
-                    &wit_component::metadata::encode(resolve, id, self.opts.string_encoding, None)?,
-                )?;
+                let (resolve, world) =
+                    wit_parser::decoding::decode_world(&wit_component::metadata::encode(
+                        resolve,
+                        id,
+                        self.opts.string_encoding,
+                        None,
+                        false,
+                    )?)?;
                 let pkg = resolve.worlds[world].package.unwrap();
 
                 let mut printer = WitPrinter::default();
@@ -1057,8 +1059,18 @@ fn interface_name(
             );
 
             if let Some(version) = &name.version {
-                let v = version.to_string().replace(['.', '-', '+'], "_");
-                ns = format!("{}v{}.", ns, &v);
+                // Only include the version segment when the same package name exists at
+                // multiple versions in this Resolve; omit it when unambiguous.
+                // Mirrors the equivalent guard in the C generator (crates/c/src/lib.rs).
+                let pkg_has_multiple_versions = resolve.packages.iter().any(|(_, p)| {
+                    p.name.namespace == name.namespace
+                        && p.name.name == name.name
+                        && p.name.version != name.version
+                });
+                if pkg_has_multiple_versions {
+                    let v = version.to_string().replace(['.', '-', '+'], "_");
+                    ns = format!("{}v{}.", ns, &v);
+                }
             }
             ns
         }
@@ -1113,4 +1125,87 @@ fn by_resource<'a>(
         by_resource.entry(Some(id)).or_default();
     }
     by_resource
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `Resolve` from inline WIT and return the generated C# namespace
+    /// for every imported interface in `world`.
+    fn imported_interface_namespaces(wit: &[(&str, &str)], world: &str) -> Vec<String> {
+        let mut resolve = Resolve::default();
+        for (path, contents) in wit {
+            resolve.push_str(path, contents).unwrap();
+        }
+        let (world_id, _) = resolve
+            .worlds
+            .iter()
+            .find(|(_, w)| w.name == world)
+            .unwrap();
+        let keys: Vec<WorldKey> = resolve.worlds[world_id]
+            .imports
+            .keys()
+            .filter(|k| matches!(k, WorldKey::Interface(_)))
+            .cloned()
+            .collect();
+        let mut csharp = CSharp::default();
+        keys.iter()
+            .map(|k| interface_name(&mut csharp, &resolve, k, Direction::Import))
+            .collect()
+    }
+
+    #[test]
+    fn version_segment_omitted_when_package_is_unambiguous() {
+        let names = imported_interface_namespaces(
+            &[
+                (
+                    "dep.wit",
+                    "package my:dep@0.1.0;\ninterface a { x: func(); }",
+                ),
+                (
+                    "root.wit",
+                    "package foo:bar;\nworld the-world { import my:dep/a@0.1.0; }",
+                ),
+            ],
+            "the-world",
+        );
+        assert!(!names.is_empty());
+        for n in &names {
+            assert!(n.contains("my.dep"), "expected package segment: {n}");
+            assert!(
+                !n.contains("v0_1_0"),
+                "version segment should be omitted: {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn version_segment_kept_when_multiple_versions_coexist() {
+        let names = imported_interface_namespaces(
+            &[
+                (
+                    "v1.wit",
+                    "package my:dep@0.1.0;\ninterface a { x: func(); }",
+                ),
+                (
+                    "v2.wit",
+                    "package my:dep@0.2.0;\ninterface a { x: func(); }",
+                ),
+                (
+                    "root.wit",
+                    "package foo:bar;\nworld the-world { import my:dep/a@0.1.0; import my:dep/a@0.2.0; }",
+                ),
+            ],
+            "the-world",
+        );
+        assert!(
+            names.iter().any(|n| n.contains("v0_1_0")),
+            "expected a v0_1_0 segment: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.contains("v0_2_0")),
+            "expected a v0_2_0 segment: {names:?}"
+        );
+    }
 }

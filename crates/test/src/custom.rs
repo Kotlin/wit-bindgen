@@ -101,6 +101,7 @@ impl LanguageMethods for Language {
 
     fn should_fail_verify(
         &self,
+        _runner: &Runner,
         _name: &str,
         _config: &crate::config::WitConfig,
         _args: &[String],
@@ -114,7 +115,8 @@ impl LanguageMethods for Language {
                 .arg("bindgen")
                 .env("WIT", &bindgen.wit_path)
                 .env("BINDINGS_DIR", dir),
-        )
+        )?;
+        Ok(())
     }
 
     fn prepare(&self, runner: &mut Runner) -> Result<()> {
@@ -125,7 +127,8 @@ impl LanguageMethods for Language {
             Command::new(&self.script)
                 .arg("prepare")
                 .env("PREP_DIR", &dir),
-        )
+        )?;
+        Ok(())
     }
 
     fn compile(&self, runner: &Runner, compile: &Compile<'_>) -> Result<()> {
@@ -141,7 +144,8 @@ impl LanguageMethods for Language {
                 .env("BINDINGS_DIR", &compile.bindings_dir)
                 .env("ARTIFACTS_DIR", &compile.artifacts_dir)
                 .env("OUTPUT", &compile.output),
-        )
+        )?;
+        Ok(())
     }
 
     fn verify(&self, runner: &Runner, verify: &Verify<'_>) -> Result<()> {
@@ -151,6 +155,7 @@ impl LanguageMethods for Language {
                 .env("WIT", verify.wit_test)
                 .env("BINDINGS_DIR", &verify.bindings_dir)
                 .env("ARTIFACTS_DIR", &verify.artifacts_dir),
-        )
+        )?;
+        Ok(())
     }
 }

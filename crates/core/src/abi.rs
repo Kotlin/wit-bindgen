@@ -1026,7 +1026,11 @@ impl<'a, B: Bindgen> Generator<'a, B> {
         // from an async-lifted wasm export means we don't need to pass
         // ownership, but we pass ownership in all other cases.
         let realloc = match (variant, lift_lower, async_) {
-            (AbiVariant::GuestImport, LiftLower::LowerArgsLiftResults, _)
+            (
+                AbiVariant::GuestImport | AbiVariant::GuestImportAsync,
+                LiftLower::LowerArgsLiftResults,
+                _,
+            )
             | (
                 AbiVariant::GuestExport
                 | AbiVariant::GuestExportAsync
@@ -1069,10 +1073,8 @@ impl<'a, B: Bindgen> Generator<'a, B> {
                     let ptr = match variant {
                         // When a wasm module calls an import it will provide
                         // space that isn't explicitly deallocated.
-                        AbiVariant::GuestImport => self.bindgen.return_pointer(size, align),
-
-                        AbiVariant::GuestImportAsync => {
-                            todo!("direct param lowering for async guest import not implemented")
+                        AbiVariant::GuestImport | AbiVariant::GuestImportAsync => {
+                            self.bindgen.return_pointer(size, align)
                         }
 
                         // When calling a wasm module from the outside, though,
@@ -1105,7 +1107,11 @@ impl<'a, B: Bindgen> Generator<'a, B> {
                 self.realloc = None;
 
                 // If necessary we may need to prepare a return pointer for this ABI.
-                if variant == AbiVariant::GuestImport && sig.retptr {
+                if matches!(
+                    variant,
+                    AbiVariant::GuestImport | AbiVariant::GuestImportAsync
+                ) && sig.retptr
+                {
                     let info = self.bindgen.sizes().params(&func.result);
                     let ptr = self.bindgen.return_pointer(info.size, info.align);
                     self.return_pointer = Some(ptr.clone());
@@ -1135,14 +1141,17 @@ impl<'a, B: Bindgen> Generator<'a, B> {
                             self.return_pointer.take().unwrap()
                         }
 
+                        AbiVariant::GuestImportAsync => {
+                            assert_eq!(sig.results.len(), 1);
+                            self.return_pointer.take().unwrap()
+                        }
+
                         // guest exports means that this is a host
                         // calling wasm so wasm returned a pointer to where
                         // the result is stored
                         AbiVariant::GuestExport => self.stack.pop().unwrap(),
 
-                        AbiVariant::GuestImportAsync
-                        | AbiVariant::GuestExportAsync
-                        | AbiVariant::GuestExportAsyncStackful => {
+                        AbiVariant::GuestExportAsync | AbiVariant::GuestExportAsyncStackful => {
                             unreachable!()
                         }
                     };
@@ -1165,23 +1174,36 @@ impl<'a, B: Bindgen> Generator<'a, B> {
                             amt: usize::from(func.result.is_some()),
                         });
                     }
-                } else {
-                    // With no return pointer in use we can simply lift the
-                    // result(s) of the function from the result of the core
-                    // wasm function.
+                } else if !async_ {
+                    // With no return pointer in use for a synchronous call, we can simply lift the
+                    // result(s) of the function from the result of the core wasm function. For async
+                    // calls, the component result is delivered via `task.return` and core result is
+                    // async progress.
                     if let Some(ty) = &func.result {
                         self.lift(ty)
+                    }
+                } else if variant == AbiVariant::GuestImportAsync {
+                    if let Some(ty) = &func.result {
+                        self.stack.pop().unwrap();
+                        self.lift(ty);
                     }
                 }
 
                 // Emit the function return
                 if async_ {
+                    if sig.retptr {
+                        // In an async guest import with retptr, CallWasm pushed the status result `ret`,
+                        // and `read_results_from_memory` pushed the lifted result. Pop `ret` so only the
+                        // lifted result remains on the stack for AsyncTaskReturn.
+                        let status_idx = self.stack.len() - 1 - usize::from(func.result.is_some());
+                        self.stack.remove(status_idx);
+                    }
                     self.emit(&Instruction::AsyncTaskReturn {
                         name: &func.name,
-                        params: if func.result.is_some() {
+                        params: if sig.retptr && func.result.is_some() {
                             &[WasmType::Pointer]
                         } else {
-                            &[]
+                            &sig.results
                         },
                     });
                 } else {
@@ -1332,7 +1354,9 @@ impl<'a, B: Bindgen> Generator<'a, B> {
                     // (statically) and then write the result into that
                     // memory, returning the pointer at the end.
                     (_lower_to_memory @ true, _, variant) => match variant {
-                        AbiVariant::GuestExport | AbiVariant::GuestExportAsync => {
+                        AbiVariant::GuestExport
+                        | AbiVariant::GuestExportAsync
+                        | AbiVariant::GuestExportAsyncStackful => {
                             let ElementInfo { size, align } =
                                 self.bindgen.sizes().params(&func.result);
                             let ptr = self.bindgen.return_pointer(size, align);
@@ -1349,9 +1373,6 @@ impl<'a, B: Bindgen> Generator<'a, B> {
                                 async_note = async_.then_some("async").unwrap_or("sync"),
                                 func_name = func.name,
                             )
-                        }
-                        AbiVariant::GuestExportAsyncStackful => {
-                            todo!("stackful exports are not yet supported")
                         }
                     },
                 }

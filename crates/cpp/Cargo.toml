@@ -1,7 +1,7 @@
 [package]
 name = "wit-bindgen-cpp"
 authors = ["Christof Petig <christof.petig@arcor.de>"]
-version = "0.57.1"
+version = "0.63.0"
 edition.workspace = true
 rust-version.workspace = true
 repository = 'https://github.com/cpetig/wit-bindgen'
@@ -26,6 +26,8 @@ wit-bindgen-c = { workspace = true }
 anyhow = { workspace = true }
 heck = { workspace = true }
 clap = { workspace = true, optional = true }
+indexmap = { workspace = true }
+wit-parser = { workspace = true }
 
 [dev-dependencies]
 test-helpers = { path = '../test-helpers' }

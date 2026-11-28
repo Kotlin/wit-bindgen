@@ -1,9 +1,9 @@
 //@ [lang]
-//@ path = 'gen/interface/test_/strings/toTest/stub.mbt'
+//@ path = 'gen/interface/test/strings/to-test/stub.mbt'
 
 ///|
 pub fn take_basic(s : String) -> Unit {
-  guard s == "latin utf16"
+  guard! s == "latin utf16"
 
 }
 

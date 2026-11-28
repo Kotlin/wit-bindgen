@@ -1,14 +1,14 @@
 //@ [lang]
-//@ path = 'gen/interface/test_/options/toTest/stub.mbt'
+//@ path = 'gen/interface/test/options/to-test/stub.mbt'
 
 ///|
 pub fn option_none_param(a : String?) -> Unit {
-  guard a is None
+  guard! a is None
 }
 
 ///|
 pub fn option_some_param(a : String?) -> Unit {
-  guard a is Some("foo")
+  guard! a is Some("foo")
 }
 
 ///|

@@ -1,5 +1,14 @@
 use crate::rt::async_support::BoxFuture;
+use alloc::boxed::Box;
+use core::future::Future;
 use core::task::{Context, Poll};
+
+#[derive(Default)]
+pub struct Spawned;
+
+impl Spawned {
+    pub fn take(&self) {}
+}
 
 #[derive(Default)]
 pub struct Tasks<'a> {
@@ -7,11 +16,17 @@ pub struct Tasks<'a> {
 }
 
 impl<'a> Tasks<'a> {
-    pub fn new(root: BoxFuture<'a>) -> Tasks<'a> {
-        Tasks { future: Some(root) }
+    pub fn new(root: impl Future<Output = ()> + 'a) -> Tasks<'a> {
+        Tasks {
+            future: Some(Box::pin(root)),
+        }
     }
 
-    pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub fn cancel_root(&mut self) {
+        self.future = None;
+    }
+
+    pub fn poll_next(&mut self, cx: &mut Context<'_>, _spawned: &Spawned) -> Poll<()> {
         if let Some(future) = self.future.as_mut() {
             if future.as_mut().poll(cx).is_ready() {
                 self.future = None;
