@@ -270,11 +270,12 @@ impl Opts {
 }
 
 impl WorldGenerator for Kotlin {
-    fn preprocess(&mut self, resolve: &Resolve, world: WorldId) {
+    fn preprocess(&mut self, resolve: &Resolve, world: WorldId) -> Result<()> {
         let name = &resolve.worlds[world].name;
         self.world = name.to_string();
-        self.sizes.fill(resolve);
+        self.sizes.fill(resolve)?;
         self.world_id = Some(world);
+        Ok(())
     }
 
     fn import_interface(
@@ -332,7 +333,7 @@ impl WorldGenerator for Kotlin {
         world: WorldId,
         funcs: &[(&str, &Function)],
         _files: &mut Files,
-    ) {
+    ) -> Result<()> {
         for (name, func) in funcs {
             if func.kind == FunctionKind::AsyncFreestanding {
                 unimplemented!("async unimplemented");
@@ -348,6 +349,7 @@ impl WorldGenerator for Kotlin {
                 ));
             }
         }
+        Ok(())
     }
 
     fn export_funcs(
@@ -394,7 +396,7 @@ impl WorldGenerator for Kotlin {
         world: WorldId,
         types: &[(&str, TypeId)],
         _files: &mut Files,
-    ) {
+    ) -> Result<()> {
         let referenced_interface = ReferencedMaybeAnonymousInterface {
             id: None,
             name_info: interface_name_from_world_name(resolve, world),
@@ -417,6 +419,7 @@ impl WorldGenerator for Kotlin {
             .export_stubs_src
             .as_mut_string()
             .push_str(&r#gen.export_stubs_src);
+        Ok(())
     }
 
     fn finish(&mut self, resolve: &Resolve, id: WorldId, files: &mut Files) -> Result<()> {
@@ -2798,6 +2801,12 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                     FunctionKind::AsyncFreestanding
                     | FunctionKind::AsyncMethod(_)
                     | FunctionKind::AsyncStatic(_) => unimplemented!("async"),
+                    FunctionKind::Getter
+                    | FunctionKind::Setter
+                    | FunctionKind::MethodGetter(_)
+                    | FunctionKind::MethodSetter(_)
+                    | FunctionKind::StaticGetter(_)
+                    | FunctionKind::StaticSetter(_) => unimplemented!("accessors"),
                 }
                 uwriteln!(self.src, "{destructure}");
             }

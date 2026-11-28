@@ -201,6 +201,7 @@ impl LanguageMethods for Kotlin {
 
     fn should_fail_verify(
         &self,
+        _runner: &Runner,
         name: &str,
         config: &crate::config::WitConfig,
         _args: &[String],
@@ -224,7 +225,10 @@ impl LanguageMethods for Kotlin {
         }
 
         // TODO: these should also be fixed, but depend on unimplemented features, which is less critical
-        if matches!(name, "map.wit") {
+        if matches!(
+            name,
+            "map.wit" | "map-in-world.wit" | "map-named-wit-map.wit"
+        ) {
             return true;
         }
 
@@ -253,6 +257,8 @@ impl LanguageMethods for Kotlin {
             "multiversion" // TODO need to support multiple versions of the same package
                 // misc:
                 | "issue-1515-special-in-comment.wit" // comment "*/" injection
+                | "issue1731.wit" // comment "*/" injection
+                | "issue1642.wit" // importing the same interface under multiple names
         )
     }
 
